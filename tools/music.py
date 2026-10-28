@@ -132,77 +132,96 @@ def place(buf, sig, t0, gain=1.0, pan=0.0):
     buf[1, i:j] += sig[:j - i] * gain * r * 1.414
 
 
-def build(duration):
-    n_bars = int(np.ceil(duration / BAR)) + 1
-    drums = np.zeros((2, int(n_bars * BAR * SR)))
-    bass = np.zeros_like(drums)
-    melo = np.zeros_like(drums)
-    fx = np.zeros_like(drums)
+# Fa# mineur : F#3=54. Mélodie cowbell en double-croches (16 pas).
+ROOT = 54
+PROG = [0, 0, -4, -2]  # F#  F#  D  E  (par mesure)
+COW_A = [12, None, 15, 12, None, 19, None, 17, 15, None, 12, None, 15, 17, 19, None]
+COW_B = [24, None, 22, 19, None, 22, None, 19, 17, None, 15, None, 17, 15, 12, None]
+KICK = [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0]
+HATS = [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1]
 
-    # Fa# mineur : F#3=54. Mélodie cowbell en double-croches (16 pas).
-    root = 54
-    prog = [0, 0, -4, -2]  # F#  F#  D  E  (par mesure)
-    cow_pat = [12, None, 15, 12, None, 19, None, 17, 15, None, 12, None, 15, 17, 19, None]
-    cow_pat_b = [24, None, 22, 19, None, 22, None, 19, 17, None, 15, None, 17, 15, 12, None]
-    kick_pat = [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0]
-    hat_pat = [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1]
 
-    intro = 2  # mesures d'intro filtrée
-    break_at = intro + 8  # break de 2 mesures
-    for b in range(n_bars):
-        t_bar = b * BAR
-        chord = root + prog[b % 4]
-        section = "intro" if b < intro else "break" if break_at <= b < break_at + 2 else "drop"
+def calm(n, t0, t1, riser_end=True):
+    """Partie calme (intro / break) : pad + cowbell étouffée, riser vers la fin."""
+    melo = np.zeros((2, n))
+    drums = np.zeros((2, n))
+    fx = np.zeros((2, n))
+    b = 0
+    while t0 + b * BAR < t1:
+        tb = t0 + b * BAR
+        chord = ROOT + PROG[b % 4]
+        place(melo, pad([chord, chord + 3, chord + 7], min(BAR, t1 - tb) + 0.3), tb, 1.0)
+        for s, nte in enumerate(COW_A if b % 2 == 0 else COW_B):
+            if nte is not None and tb + s * STEP < t1:
+                place(melo, filt(cowbell(ROOT + nte), "lowpass", 1500), tb + s * STEP, 0.5, -0.2)
+        for s in range(0, 16, 4):
+            if tb + s * STEP < t1:
+                place(drums, hat(), tb + s * STEP, 0.4, 0.3)
+        b += 1
+    if riser_end:
+        d = min(BAR, t1 - t0)
+        place(fx, riser(d), t1 - d, 0.6)
+    return drums, melo, fx
 
-        if section != "drop":
-            place(melo, pad([chord, chord + 3, chord + 7], BAR), t_bar, 1.0)
-        if section == "intro" or section == "break":
-            for s in range(16):
-                if s % 4 == 0:
-                    place(drums, hat(), t_bar + s * STEP, 0.5, 0.3)
-            pat = cow_pat if b % 2 == 0 else cow_pat_b
-            for s, nte in enumerate(pat):
-                if nte is not None:
-                    place(melo, filt(cowbell(root + nte), "lowpass", 1800), t_bar + s * STEP, 0.6, -0.2)
-            if b == intro - 1 or b == break_at + 1:
-                place(fx, riser(BAR), t_bar, 0.6)
-            continue
 
-        # drop
+def drop(n, t0, t1):
+    """Partie drop : kick, clap, hats trap, 808 saturée, cowbell."""
+    drums = np.zeros((2, n))
+    bass = np.zeros((2, n))
+    melo = np.zeros((2, n))
+    duck = np.ones(n)
+    place(melo, impact(), t0, 0.8)
+    b = 0
+    while t0 + b * BAR < t1:
+        tb = t0 + b * BAR
+        chord = ROOT + PROG[b % 4]
         for s in range(16):
-            ts = t_bar + s * STEP
-            if kick_pat[s]:
+            ts = tb + s * STEP
+            if KICK[s]:
                 place(drums, kick(), ts, 1.0)
+                i, k = int(ts * SR), int(0.18 * SR)
+                if i + k < n:
+                    duck[i:i + k] = np.minimum(duck[i:i + k], 0.45 + 0.55 * np.linspace(0, 1, k) ** 0.5)
             if s in (4, 12):
                 place(drums, clap(), ts, 0.75)
-            if hat_pat[s]:
+            if HATS[s]:
                 place(drums, hat(), ts, 0.45 if s % 2 else 0.6, 0.35)
             if s == 14 and b % 2 == 1:
                 for k in range(3):  # roll de hi-hats trap
                     place(drums, hat(), ts + k * STEP / 3, 0.4, 0.35)
-        place(drums, hat(True), t_bar + 6 * STEP, 0.35, -0.35)
-        # 808 qui suit le kick
-        for s, dur in ((0, 7), (7, 3), (10, 6)):
+        place(drums, hat(True), tb + 6 * STEP, 0.35, -0.35)
+        for s, dur in ((0, 7), (7, 3), (10, 6)):  # 808 qui suit le kick
             prev = chord - 12 + (5 if s == 10 and b % 2 else 0)
-            place(bass, bass808(chord - 24, dur * STEP, glide_from=prev if s else None), t_bar + s * STEP, 0.9)
-        pat = cow_pat if b % 2 == 0 else cow_pat_b
-        for s, nte in enumerate(pat):
+            place(bass, bass808(chord - 24, dur * STEP, glide_from=prev if s else None), tb + s * STEP, 0.9)
+        for s, nte in enumerate(COW_A if b % 2 == 0 else COW_B):
             if nte is not None:
-                place(melo, cowbell(root + nte), t_bar + s * STEP, 0.75, -0.2)
-                place(melo, cowbell(root + nte), t_bar + s * STEP + 0.09, 0.22, 0.4)  # écho
-        if b in (intro, break_at + 2):
-            place(fx, impact(), t_bar, 0.8)
+                place(melo, cowbell(ROOT + nte), tb + s * STEP, 0.75, -0.2)
+                place(melo, cowbell(ROOT + nte), tb + s * STEP + 0.09, 0.22, 0.4)  # écho
+        b += 1
+    mix = drums + bass + melo * duck
+    # coupe nette à t1 (fondu de 30 ms) pour laisser place au break
+    i1 = int(t1 * SR)
+    k = int(0.03 * SR)
+    if i1 < n:
+        mix[:, i1:i1 + k] *= np.linspace(1, 0, min(k, n - i1))
+        mix[:, i1 + k:] = 0
+    return mix
 
-    # ducking (sidechain) du mélo et des fx sur le kick
-    duck = np.ones(drums.shape[1])
-    for b in range(n_bars):
-        for s in range(16):
-            if kick_pat[s]:
-                i = int((b * BAR + s * STEP) * SR)
-                n = int(0.18 * SR)
-                if i + n < len(duck):
-                    duck[i:i + n] = np.minimum(duck[i:i + n], 0.45 + 0.55 * np.linspace(0, 1, n) ** 0.5)
-    mix = drums + bass + (melo + fx) * duck
+
+def build(duration, drop1=3.64, brk=None):
+    """drop1 : début du premier drop (s). brk : (début, fin) d'un break optionnel."""
+    n = int((duration + 2) * SR)
+    mix = np.zeros((2, n))
+    for part in calm(n, 0.0, drop1):
+        mix += part
+    if brk:
+        a, b = brk
+        mix += drop(n, drop1, a)
+        for part in calm(n, a, b):
+            mix += part * 0.8
+        mix += drop(n, b, duration)
+    else:
+        mix += drop(n, drop1, duration)
     mix = np.tanh(1.3 * mix)  # glue/saturation
     mix = mix[:, :int(duration * SR)]
     fade = int(1.5 * SR)
@@ -211,9 +230,12 @@ def build(duration):
     return mix
 
 
+def write(path, mix):
+    wavfile.write(path, SR, (mix.T * 32767).astype(np.int16))
+
+
 if __name__ == "__main__":
     out = sys.argv[1]
     dur = float(sys.argv[2]) if len(sys.argv) > 2 else 66
-    m = build(dur)
-    wavfile.write(out, SR, (m.T * 32767).astype(np.int16))
-    print(f"{out}: {dur}s, {BPM} BPM, drop à {2 * BAR:.2f}s")
+    write(out, build(dur))
+    print(f"{out}: {dur}s, {BPM} BPM")

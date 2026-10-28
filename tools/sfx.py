@@ -160,6 +160,22 @@ def scratch():
     return base * wob * np.sin(np.pi * t / d)
 
 
+def sonar():
+    """Ping de sonar avec échos."""
+    out = np.zeros(int(1.8 * SR))
+    for k in range(4):
+        t = t_(0.5)
+        p = np.sin(2 * np.pi * 1150 * t) * np.exp(-t / 0.12) * np.clip(t / 0.003, 0, 1)
+        i = int(k * 0.32 * SR)
+        out[i:i + len(p)] += p * 0.55 ** k
+    return reverb(out, 0.8, 0.35)
+
+
+def tick():
+    t = t_(0.05)
+    return np.sin(2 * np.pi * 2600 * t) * env(len(t), 0.0003, 0.008)
+
+
 def reverb(x, length, mix):
     n = int(length * SR)
     ir = rng.standard_normal(n) * np.exp(-np.arange(n) / SR / (length / 5))
@@ -174,6 +190,7 @@ BANK = {
     "whoosh": whoosh, "whoosh_down": whoosh_down, "pop": pop, "click": click,
     "boom": boom, "impact": impact, "riser": riser, "ding": ding, "bling": bling,
     "glitch": glitch, "shutter": shutter, "heartbeat": heartbeat, "scratch": scratch,
+    "sonar": sonar, "tick": tick,
 }
 
 if __name__ == "__main__":
