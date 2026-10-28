@@ -1,7 +1,7 @@
 """Monte le TikTok vertical Blind Hunter à partir du gameplay, de la voix off et du plan.
 
 Usage :
-  python3 montage.py --src gameplay.mp4 --out tiktok.mp4 --assets dossier [--voice voix.mp3]
+  python3 montage.py --src gameplay.mp4 --out tiktok.mp4 --assets dossier [--voice voix.mp3] [--plan plan2]
                      [--music none|gen|musique.mp3] [--music-start 12.5]
 
 Sans --voice, le timing de la voix est estimé (aperçu sans voix).
@@ -19,11 +19,16 @@ from scipy.io import wavfile
 from scipy.signal import butter, find_peaks, sosfilt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import importlib  # noqa: E402
+
 import music  # noqa: E402
-from plan import SCRIPT, SEARCH_TEXT, TAIL  # noqa: E402
+
+P = None  # module du plan de montage (plan.py par défaut, --plan pour un autre)
+STYLE = {}
+DEFAULT_STYLE = dict(font="Montserrat[wght].ttf", weight=900, size=132, stroke=None, sub_y=0.56,
+                     pop="back", whip=True, auto_whoosh=True, drift=0.045)
 
 W, H, FPS, SR = 1080, 1920, 30, 48000
-SUB_Y = int(H * 0.56)
 PUNCT = "….,!?;:"
 
 
@@ -233,7 +238,7 @@ def find_word(s, key):
 
 
 def build_timeline(sentences, speech_end):
-    total = speech_end + TAIL
+    total = speech_end + P.TAIL
     vis = [0.0] + [max(0.0, s["words"][0]["t0"] - 0.06) for s in sentences[1:]] + [total]
     shots, cues, subs, emojis = [], [], [], []
     search = None
@@ -256,7 +261,7 @@ def build_timeline(sentences, speech_end):
                 d = (g1 - g0) * sh.get("w", 1.0) / tot
                 shots.append(dict(sh, start=t, dur=d))
                 t += d
-        if i > 0 and not any(k == "^" for k, _, _ in s.get("sfx", [])):
+        if STYLE["auto_whoosh"] and i > 0 and not any(k == "^" for k, _, _ in s.get("sfx", [])):
             cues.append((max(0.0, a - 0.2), "whoosh", 0.22))
         for key, name, gain in s.get("sfx", []):
             t = a if key == "^" else find_word(s, key)["t0"]
@@ -403,7 +408,7 @@ def mix_audio(args, total, shots, cues, sentences, tmpdir):
         rel = int(0.25 * SR)
         envl = np.convolve(envl, np.ones(rel) / rel, mode="same")
         envl = np.clip(envl / (np.percentile(envl[envl > 0.01], 70) + 1e-9), 0, 1) if np.any(envl > 0.01) else envl
-        mus *= 0.32 * (1 - 0.6 * envl)
+        mus *= getattr(P, "MUSIC_GAIN", 0.32) * (1 - 0.6 * envl)
     else:
         mus *= 0.55
     game = np.zeros((2, n), np.float32)
@@ -432,20 +437,24 @@ class Fonts:
             self.path = os.path.join(assets, "fonts", "Montserrat%5Bwght%5D.ttf")
         self.cache = {}
 
-    def get(self, size, weight=900):
-        k = (size, weight)
+        self.dir = os.path.join(assets, "fonts")
+
+    def get(self, size, weight=900, file=None):
+        k = (size, weight, file)
         if k not in self.cache:
-            f = ImageFont.truetype(self.path, size)
-            f.set_variation_by_axes([weight])
+            f = ImageFont.truetype(os.path.join(self.dir, file) if file else self.path, size)
+            if weight is not None:
+                f.set_variation_by_axes([weight])
             self.cache[k] = f
         return self.cache[k]
 
 
 def render_word(fonts, text, color, max_w=int(W * 0.88)):
-    size = 132
+    size = STYLE["size"]
+    font_file = None if STYLE["font"].startswith("Montserrat") else STYLE["font"]
     while True:
-        font = fonts.get(size)
-        sw = max(8, size // 10)
+        font = fonts.get(size, STYLE["weight"], font_file)
+        sw = STYLE["stroke"] or max(8, size // 10)
         x0, y0, x1, y1 = ImageDraw.Draw(Image.new("L", (1, 1))).textbbox((0, 0), text, font=font, stroke_width=sw)
         if x1 - x0 <= max_w or size <= 60:
             break
@@ -494,6 +503,51 @@ def render_card(fonts, title, subtitle):
     return img
 
 
+def grab_frame(src, t):
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t:.3f}", "-i", src, "-frames:v", "1",
+                          "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    return Image.fromarray(np.frombuffer(raw, np.uint8).reshape(1080, 1920, 3))
+
+
+def render_gamecard(fonts, src, gc):
+    """Carte de jeu façon Roblox : vignette carrée, titre, bouton Jouer."""
+    cw, th = 700, 700
+    frame = grab_frame(src, gc["thumb"])
+    x = int(min(max(gc.get("thumb_cx", 0.5) * 1920 - 540, 0), 1920 - 1080))
+    thumb = frame.crop((x, 0, x + 1080, 1080)).resize((th, th), Image.LANCZOS)
+    # titre du jeu sur la vignette, avec lueur violette
+    over = Image.new("RGBA", (th, th), (0, 0, 0, 0))
+    grad = Image.linear_gradient("L").resize((th, th)).point(lambda v: int(v * 0.85))
+    over.paste((0, 0, 0, 255), (0, 0, th, th), grad)
+    thumb = thumb.convert("RGBA")
+    thumb.alpha_composite(over)
+    tf = fonts.get(118, None, "Anton-Regular.ttf")
+    glow = Image.new("L", (th, th), 0)
+    ImageDraw.Draw(glow).text((th / 2, th - 60), gc["title"].upper(), font=tf, fill=255, anchor="ms",
+                              stroke_width=8, stroke_fill=255)
+    gl = Image.new("RGBA", (th, th), (170, 90, 255, 0))
+    gl.putalpha(glow.filter(ImageFilter.GaussianBlur(18)))
+    thumb.alpha_composite(gl)
+    ImageDraw.Draw(thumb).text((th / 2, th - 60), gc["title"].upper(), font=tf, fill="white", anchor="ms",
+                               stroke_width=4, stroke_fill="black")
+    card = Image.new("RGBA", (cw + 60, th + 330), (0, 0, 0, 0))
+    sh = Image.new("L", card.size, 0)
+    ImageDraw.Draw(sh).rounded_rectangle((30, 40, 30 + cw, 30 + th + 270), 30, fill=180)
+    card.putalpha(sh.filter(ImageFilter.GaussianBlur(16)))
+    d = ImageDraw.Draw(card)
+    d.rounded_rectangle((30, 30, 30 + cw, 30 + th + 270), 30, fill=(25, 27, 31, 255))
+    mask = Image.new("L", (th, th), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, th, th), 30, fill=255)
+    card.paste(thumb, (30, 30), mask)
+    d.text((70, 30 + th + 40), gc["title"], font=fonts.get(64, 800), fill="white")
+    bx, by = 70, 30 + th + 140
+    d.rounded_rectangle((bx, by, 30 + cw - 40, by + 100), 18, fill=(0, 176, 111, 255))
+    cx, cy = (bx + 30 + cw - 40) / 2 - 90, by + 50
+    d.polygon([(cx - 18, cy - 24), (cx - 18, cy + 24), (cx + 22, cy)], fill="white")
+    d.text((cx + 50, cy), "JOUER", font=fonts.get(56, 800), fill="white", anchor="lm")
+    return card
+
+
 def emoji_with_shadow(path, size=270):
     e = Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
     pad = 40
@@ -540,7 +594,7 @@ def search_bar(fonts, typed, caret):
 
 # ---------------------------------------------------------------- rendu
 def render(args):
-    sentences = [dict(s, words=tokenize(s["text"])) for s in SCRIPT]
+    sentences = [dict(s, words=tokenize(s["text"])) for s in P.SCRIPT]
     speech_end = align_timing(sentences, args.voice) if args.voice else estimate_timing(sentences)
     total, shots, cues, subs, emojis, search, cuts = build_timeline(sentences, speech_end)
     print(f"Durée : {total:.1f}s, {len(shots)} plans, {len(subs)} mots, {len(cues)} effets sonores")
@@ -579,7 +633,7 @@ def render(args):
         frame = last if last is not None else np.zeros((H, W, 3), np.uint8)
         fx = sh.get("fx", [])
         # zoom : dérive lente + punch d'entrée + tremblement
-        k = 1.0 + 0.045 * min(lt / max(sh["dur"], 0.1), 1.0)
+        k = 1.0 + STYLE["drift"] * min(lt / max(sh["dur"], 0.1), 1.0)
         if "punch" in fx:
             k *= 1 + 0.13 * math.exp(-lt / 0.09)
         dx = dy = 0.0
@@ -609,7 +663,7 @@ def render(args):
         if "dark" in fx:
             arr = np.asarray(img).copy() if arr is None else arr
             arr = (arr * max(0.12, 1 - 0.9 * lt / max(sh["dur"], 0.1))).astype(np.uint8)
-        dc = min((abs(t - c) for c in cuts), default=9)
+        dc = min((abs(t - c) for c in cuts), default=9) if STYLE["whip"] else 9
         if dc < 0.075:
             arr = np.asarray(img).copy() if arr is None else arr
             step = int(26 * (1 - dc / 0.075)) + 4
@@ -623,7 +677,12 @@ def render(args):
             arr = (arr * (1 - a) + 255 * a).astype(np.uint8)
         if arr is not None:
             img = Image.fromarray(arr)
-        suby = int(H * sh.get("suby", SUB_Y / H))
+        suby = int(H * sh.get("suby", STYLE["sub_y"]))
+        if sh.get("gamecard"):
+            gc = sh["gamecard"]
+            if "img" not in gc:
+                gc["img"] = render_gamecard(fonts, args.src, gc)
+            paste_center(img, gc["img"], W / 2, H * 0.36, 0.4 + 0.6 * ease_back(lt / 0.3))
         if sh.get("card"):
             if sh["card"] not in card_imgs:
                 card_imgs[sh["card"]] = render_card(fonts, *sh["card"])
@@ -632,7 +691,7 @@ def render(args):
         if search and search[0] <= t < search[1]:
             t0, t1, ty0, ty1 = search
             p = min(max((t - ty0) / max(ty1 - ty0, 0.1), 0), 1)
-            typed = SEARCH_TEXT[:int(round(p * len(SEARCH_TEXT)))]
+            typed = P.SEARCH_TEXT[:int(round(p * len(P.SEARCH_TEXT)))]
             bar = search_bar(fonts, typed, caret=int(t * 2.5) % 2 == 0 or p < 1)
             paste_center(img, bar, W / 2, H * 0.3, scale=0.7 + 0.3 * ease_back((t - t0) / 0.18))
         # emojis
@@ -652,7 +711,10 @@ def render(args):
                 key = (text, color)
                 if key not in word_imgs:
                     word_imgs[key] = render_word(fonts, text, color)
-                sc = 0.6 + 0.4 * ease_back((t - w0) / 0.13)
+                if STYLE["pop"] == "back":
+                    sc = 0.6 + 0.4 * ease_back((t - w0) / 0.13)
+                else:
+                    sc = 0.86 + 0.14 * min((t - w0) / 0.07, 1.0)
                 paste_center(img, word_imgs[key], W / 2, suby, sc)
                 break
         enc.stdin.write(img.tobytes())
@@ -671,6 +733,10 @@ if __name__ == "__main__":
     ap.add_argument("--out", required=True)
     ap.add_argument("--voice")
     ap.add_argument("--assets", required=True, help="dossier avec fonts/, emoji/, sfx/")
+    ap.add_argument("--plan", default="plan", help="module du plan de montage (plan, plan2…)")
     ap.add_argument("--music", default="none", help="none (ajoutée dans TikTok), gen (générée) ou chemin d'un fichier")
     ap.add_argument("--music-start", type=float, default=0.0, help="début dans le fichier musique (s)")
-    render(ap.parse_args())
+    a = ap.parse_args()
+    P = importlib.import_module(a.plan)
+    STYLE = dict(DEFAULT_STYLE, **getattr(P, "STYLE", {}))
+    render(a)
