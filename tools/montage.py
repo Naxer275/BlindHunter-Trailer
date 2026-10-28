@@ -16,6 +16,7 @@ import sys
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from scipy.io import wavfile
+from scipy.signal import butter, find_peaks, sosfilt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import music  # noqa: E402
@@ -97,71 +98,129 @@ def detect_pauses(x, sr=16000, min_pause=0.12):
     return first, last, pauses
 
 
+def syllable_nuclei(x, sr=16000):
+    """Pics d'énergie de la voix (≈ une syllabe chacun) et creux candidats entre deux phrases."""
+    y = sosfilt(butter(4, [300, 3500], btype="band", fs=sr, output="sos"), x)
+    hop = sr // 100
+    n = len(y) // hop
+    db = 20 * np.log10(np.sqrt(np.mean(y[:n * hop].reshape(n, hop) ** 2, axis=1) + 1e-12))
+    win = np.hanning(5)
+    db = np.convolve(db, win / win.sum(), mode="same")
+    lo, hi = np.percentile(db, 10), np.percentile(db, 90)
+    thr = lo + 0.33 * (hi - lo)
+    peaks, _ = find_peaks(db, prominence=3, distance=8, height=thr)
+    dips, _ = find_peaks(-db, prominence=6, distance=15)
+    return peaks * 0.01, [d * 0.01 for d in dips if db[d] < thr + 4]
+
+
 def align_timing(sentences, voice):
+    """Cale chaque phrase puis chaque mot sur la voix en comptant les syllabes prononcées."""
     x = load_mono(voice)
     first, last, pauses = detect_pauses(x)
-    span = last - first
-    weights = [sum(w["syl"] for w in s["words"]) + 2.0 for s in sentences]
-    cum = np.cumsum(weights) / sum(weights)
-    K = len(sentences) - 1
-    P = len(pauses)
-    if P < K:
-        print(f"⚠ seulement {P} pauses détectées pour {K} phrases : timing proportionnel")
-        bounds = [(first + c * span, first + c * span) for c in cum[:-1]]
-    else:
-        mids = np.array([(a + b) / 2 for a, b in pauses])
-        durs = np.array([b - a for a, b in pauses])
-        target = first + cum[:-1] * span
-        cost = np.abs(target[:, None] - mids[None, :]) / span * 12 - np.minimum(durs, 0.9)[None, :] * 4
-        dp = np.full((K, P), np.inf)
-        back = np.zeros((K, P), int)
-        dp[0] = cost[0]
-        for k in range(1, K):
-            best, arg = np.inf, -1
-            for j in range(P):
-                if j - 1 >= 0 and dp[k - 1][j - 1] < best:
-                    best, arg = dp[k - 1][j - 1], j - 1
-                dp[k][j] = cost[k][j] + best
-                back[k][j] = arg
-        j = int(np.argmin(dp[K - 1]))
-        chosen = [j]
-        for k in range(K - 1, 0, -1):
-            j = back[k][j]
-            chosen.append(j)
-        bounds = [pauses[j] for j in reversed(chosen)]
-    starts = [first] + [b for _, b in bounds]
-    ends = [a for a, _ in bounds] + [last]
+    nuc, dips = syllable_nuclei(x)
+    nuc = nuc[(nuc >= first) & (nuc <= last)]
+    # frontières possibles : vraies pauses (fortes) + creux d'énergie (faibles)
+    cands = [(a, b, -min(b - a, 0.5) * 2) for a, b in pauses]
+    cands += [(d, d, 1.0) for d in dips if first < d < last and all(not (a - 0.05 <= d <= b + 0.05) for a, b in pauses)]
+    cands.sort()
+    syl = [sum(w["syl"] for w in s["words"]) for s in sentences]
+    r = len(nuc) / sum(syl)
+    K, C = len(sentences), len(cands)
+    edges = [first] + [c[1] for c in cands]  # début possible d'une phrase
+    stops = [c[0] for c in cands] + [last]  # fin possible d'une phrase
+
+    def count(t0, t1):
+        return int(np.searchsorted(nuc, t1) - np.searchsorted(nuc, t0))
+
+    def sent_cost(k, t0, t1):
+        e = r * syl[k]
+        return (count(t0, t1) - e) ** 2 / (e + 2)
+
+    INF = float("inf")
+    # dp[k][j] : phrases 0..k placées, la phrase k se termine sur le candidat j (C = fin de la voix)
+    dp = np.full((K, C + 1), INF)
+    back = np.zeros((K, C + 1), int)
+    for j in range(C + 1):
+        dp[0][j] = sent_cost(0, first, stops[j]) + (cands[j][2] if j < C else 0)
+    for k in range(1, K):
+        for j in range(k, C + 1):
+            best, arg = INF, -1
+            for i in range(k - 1, j):
+                v = dp[k - 1][i] + sent_cost(k, edges[i + 1], stops[j])
+                if v < best:
+                    best, arg = v, i
+            dp[k][j] = best + (cands[j][2] if j < C else 0)
+            back[k][j] = arg
+    if not np.isfinite(dp[K - 1][C]):
+        raise SystemExit("Impossible de caler les phrases sur la voix")
+    js, j = [], C
+    for k in range(K - 1, -1, -1):
+        js.append(j)
+        j = back[k][j]
+    js.reverse()
+    starts = [first] + [edges[j + 1] for j in js[:-1]]
+    ends = [stops[j] for j in js]
     for s, s0, s1 in zip(sentences, starts, ends):
-        inner = [p for p in pauses if p[0] > s0 + 0.05 and p[1] < s1 - 0.05]
-        place_words(s["words"], s0, s1, inner)
+        inner = [p for p in pauses if p[0] > s0 + 0.03 and p[1] < s1 - 0.03]
+        place_words(s["words"], s0, s1, inner, nuc[(nuc >= s0) & (nuc < s1)])
     return last
 
 
-def place_words(words, s0, s1, inner):
-    """Répartit les mots d'une phrase sur [s0, s1], calés sur les pauses internes."""
-    n = len(words)
+def place_words(words, s0, s1, inner, nuc):
+    """Place les mots d'une phrase : d'abord sur les pauses de ponctuation, puis sur les syllabes."""
     syl = np.array([w["syl"] for w in words], float)
-    cum = np.concatenate([[0], np.cumsum(syl)]) / syl.sum()
-    voiced = (s1 - s0) - sum(b - a for a, b in inner)
+    cum = np.concatenate([[0], np.cumsum(syl)])
+    n = len(nuc)
 
-    def to_time(f):  # fraction de syllabes -> temps, en sautant les pauses
-        t, left = s0, f * voiced
-        for a, b in inner:
-            if t + left <= a:
-                break
-            left -= a - t
-            t = b
-        return t + left
+    def expected(c):  # temps attendu après c syllabes
+        if n == 0:
+            return s0 + (s1 - s0) * c / cum[-1]
+        f = c * n / cum[-1]
+        i = min(int(f), n - 1)
+        return float(nuc[i]) if i + 1 >= n else float(nuc[i] + (f - i) * (nuc[i + 1] - nuc[i]))
 
-    starts = [to_time(c) for c in cum[:-1]]
-    ends = [to_time(c) for c in cum[1:]]
-    # accroche les frontières de mots les plus proches de chaque pause
-    for a, b in inner:
-        k = min(range(1, n), key=lambda i: abs(starts[i] - (a + b) / 2), default=None)
-        if k is not None:
-            ends[k - 1], starts[k] = a, b
-    for w, t0, t1 in zip(words, starts, ends):
-        w["t0"], w["t1"] = t0, max(t1, t0 + 0.08)
+    # ponctuation (virgule, « … », point) -> pause réelle la plus proche
+    cuts, used = [], -1
+    for k, w in enumerate(words[:-1]):
+        if w["pause"] <= 0:
+            continue
+        e = expected(cum[k + 1])
+        opts = [(abs((p[0] + p[1]) / 2 - e), q) for q, p in enumerate(inner) if q > used]
+        if opts and min(opts)[0] < 0.7:
+            q = min(opts)[1]
+            cuts.append((k + 1, inner[q]))
+            used = q
+    idx = [0] + [k for k, _ in cuts] + [len(words)]
+    t0s = [s0] + [p[1] for _, p in cuts]
+    t1s = [p[0] for _, p in cuts] + [s1]
+    for a, b, g0, g1 in zip(idx[:-1], idx[1:], t0s, t1s):
+        rest = [p for p in inner if g0 < p[0] and p[1] < g1]
+        place_group(words[a:b], g0, g1, rest, nuc[(nuc >= g0) & (nuc < g1)])
+
+
+def place_group(words, s0, s1, inner, nuc):
+    """Répartit des mots sur [s0, s1] en suivant les pics de syllabes."""
+    syl = np.array([w["syl"] for w in words], float)
+    cum = np.concatenate([[0], np.cumsum(syl)])
+    n = len(nuc)
+    bounds = [s0]
+    for c in cum[1:-1]:
+        i = int(round(c * n / cum[-1])) if n else 0
+        if 0 < i < n:
+            a, b = nuc[i - 1], nuc[i]
+            gap = [p for p in inner if a <= p[0] and p[1] <= b]
+            bounds.append(gap[0] if gap else a + 0.6 * (b - a))
+        else:
+            bounds.append(s0 + (s1 - s0) * c / cum[-1])
+    bounds.append(s1)
+    prev = None
+    for k, w in enumerate(words):
+        b0, b1 = bounds[k], bounds[k + 1]
+        t0 = b0[1] if isinstance(b0, tuple) else b0  # après une pause : début à la fin de la pause
+        t1 = b1[0] if isinstance(b1, tuple) else b1  # avant une pause : fin au début de la pause
+        w["t0"] = t0 if prev is None else max(t0, prev + 0.06)
+        w["t1"] = max(t1, w["t0"] + 0.06)
+        prev = w["t0"]
 
 
 # ---------------------------------------------------------------- timeline
