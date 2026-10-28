@@ -230,6 +230,8 @@ def place_group(words, s0, s1, inner, nuc):
 
 # ---------------------------------------------------------------- timeline
 def find_word(s, key):
+    if isinstance(key, (int, float)):  # décalage en secondes depuis le début de la phrase
+        return dict(t0=s["vis"][0] + key, t1=s["vis"][0] + key)
     key = key.lower()
     for w in s["words"]:
         if w["key"] == key:
@@ -239,8 +241,11 @@ def find_word(s, key):
 
 def build_timeline(sentences, speech_end):
     total = speech_end + P.TAIL
-    vis = [0.0] + [max(0.0, s["words"][0]["t0"] - 0.06) for s in sentences[1:]] + [total]
-    shots, cues, subs, emojis = [], [], [], []
+    def start(s):
+        return max(0.0, s["words"][0]["t0"] - 0.06) if s["words"] else s["t_start"]
+
+    vis = [0.0] + [start(s) for s in sentences[1:]] + [total]
+    shots, cues, subs, emojis, says, pulses = [], [], [], [], [], []
     search = None
     for i, s in enumerate(sentences):
         a, b = vis[i], vis[i + 1]
@@ -265,12 +270,20 @@ def build_timeline(sentences, speech_end):
             cues.append((max(0.0, a - 0.2), "whoosh", 0.22))
         for key, name, gain in s.get("sfx", []):
             t = a if key == "^" else find_word(s, key)["t0"]
-            if name.startswith("whoosh"):
+            if name.startswith("whoosh") and isinstance(key, str):
                 t -= 0.18
             cues.append((max(0.0, t), name, gain))
         for key, code in s.get("emoji", []):
             t = find_word(s, key)["t0"]
             emojis.append((t, min(t + 1.2, b + 0.1), code))
+        for off, dur, txt, color in s.get("texts", []):
+            says.append((a + off, a + off + dur, txt, color))
+        if s.get("pulses") == "words":
+            pulses += [w["t0"] for w in s["words"]]
+        elif s.get("pulses"):
+            for off in s["pulses"]:
+                pulses.append(a + off)
+                cues.append((a + off, "ping", s.get("ping_gain", 0.45)))
         if s.get("searchbar"):
             t0 = find_word(s, s["searchbar"])["t0"]
             ws = s["words"]
@@ -281,7 +294,7 @@ def build_timeline(sentences, speech_end):
             color = s.get("hl", {}).get(w["key"], "#FFFFFF")
             subs.append((w["t0"], max(nxt, w["t0"] + 0.1), w["disp"], color))
     cuts = [s["vis"][0] for s in sentences[1:]]
-    return total, shots, cues, subs, emojis, search, cuts
+    return total, shots, cues, subs, emojis, search, cuts, says, sorted(pulses)
 
 
 # ---------------------------------------------------------------- vidéo source
@@ -503,6 +516,62 @@ def render_card(fonts, title, subtitle):
     return img
 
 
+HY, HX = np.mgrid[0:H // 2, 0:W // 2].astype(np.float32) * 2
+VIGNETTE = np.clip((np.hypot((np.mgrid[0:H, 0:W][1] - W / 2) / (W / 2), (np.mgrid[0:H, 0:W][0] - H / 2) / (H / 2)) - 0.55) / 0.7, 0, 1) ** 1.6
+SONAR = np.array([176, 108, 255], np.float32)
+
+
+def blind_vision(frame, t, pulses, pc):
+    """Vision du chasseur : noir total, ondes de sonar qui révèlent le décor, joueurs rouges lumineux."""
+    cx, cy = pc[0] * W, pc[1] * H
+    d = np.hypot(HX - cx, HY - cy)
+    mask = np.full(d.shape, 0.035, np.float32)
+    ring = np.zeros(d.shape, np.float32)
+    for tp in pulses:
+        a = t - tp
+        if 0 <= a < 1.6:
+            r = 2600 * a
+            mask = np.maximum(mask, np.clip((r - d) / 140 + 1, 0, 1) * math.exp(-a / 0.5))
+            ring += np.exp(-((d - r) / 24) ** 2) * math.exp(-a / 0.4)
+    mask = np.asarray(Image.fromarray(mask).resize((W, H), Image.BILINEAR))
+    ring = np.asarray(Image.fromarray(ring).resize((W, H), Image.BILINEAR))
+    f = frame.astype(np.float32)
+    red = (f[..., 0] > 140) & (f[..., 1] < 85) & (f[..., 2] < 85)
+    out = f * mask[..., None] + ring[..., None] * SONAR * 0.9
+    out[red] = f[red]
+    glow = Image.fromarray((red[::4, ::4] * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(6)).resize((W, H))
+    out += (np.asarray(glow, np.float32) / 255 * 0.6)[..., None] * np.array([255, 30, 30], np.float32)
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def render_block(fonts, text, color, size=104, max_w=900):
+    """Texte centré sur une ou deux lignes, style sous-titre (contour noir + ombre)."""
+    font = fonts.get(size)
+    d0 = ImageDraw.Draw(Image.new("L", (1, 1)))
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        test = (cur + " " + w).strip()
+        if d0.textlength(test, font=font) > max_w and cur:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = test
+    lines.append(cur)
+    lh, sw, pad = int(size * 1.15), max(8, size // 10), 30
+    wmax = int(max(d0.textlength(l, font=font) for l in lines)) + 2 * sw
+    w, h = wmax + 2 * pad, lh * len(lines) + 2 * pad
+    shadow = Image.new("L", (w, h), 0)
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    for i, l in enumerate(lines):
+        ImageDraw.Draw(shadow).text((w / 2, pad + i * lh + 9), l, font=font, fill=200, anchor="ma",
+                                    stroke_width=sw, stroke_fill=200)
+    img.putalpha(shadow.filter(ImageFilter.GaussianBlur(7)))
+    d = ImageDraw.Draw(img)
+    for i, l in enumerate(lines):
+        d.text((w / 2, pad + i * lh), l, font=font, fill=color, anchor="ma", stroke_width=sw, stroke_fill="black")
+    return img
+
+
 def grab_frame(src, t):
     raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t:.3f}", "-i", src, "-frames:v", "1",
                           "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
@@ -611,6 +680,11 @@ def splice_voices(args, sentences, tmpdir, gap=0.08):
         src[key] = (ss, load_stereo(files[key]))
     parts, cur = [], 0.0
     for s in sentences:
+        if s.get("silent"):  # passage sans voix (sons et image seulement)
+            s["t_start"] = cur
+            parts.append(np.zeros((2, int(s["silent"] * SR)), np.float32))
+            cur += s["silent"]
+            continue
         key, idx = s["voice"]
         ss, audio = src[key]
         ref = ss[idx]
@@ -673,12 +747,12 @@ def render(args):
     sentences = [dict(s, words=tokenize(s["text"])) for s in P.SCRIPT]
     tmpdir = os.path.join(os.path.dirname(os.path.abspath(args.out)), "_tmp")
     os.makedirs(tmpdir, exist_ok=True)
-    if any("voice" in s for s in sentences):
+    if any("voice" in s or "silent" in s for s in sentences):
         args.voice, speech_end = splice_voices(args, sentences, tmpdir)
         print("Voix assemblée :", args.voice)
     else:
         speech_end = align_timing(sentences, args.voice) if args.voice else estimate_timing(sentences)
-    total, shots, cues, subs, emojis, search, cuts = build_timeline(sentences, speech_end)
+    total, shots, cues, subs, emojis, search, cuts, says, pulses = build_timeline(sentences, speech_end)
     headers = [(sentences[a]["vis"][0], sentences[b]["vis"][1], txt, code)
                for a, b, txt, code in getattr(P, "HEADERS", [])]
     print(f"Durée : {total:.1f}s, {len(shots)} plans, {len(subs)} mots, {len(cues)} effets sonores")
@@ -753,6 +827,13 @@ def render(args):
             for j in range(-4, 5):
                 acc += np.roll(arr, j * step + (40 if t < min(cuts, key=lambda c: abs(t - c)) else -40), axis=1)
             arr = (acc / 9).astype(np.uint8)
+        if sh.get("blind"):
+            arr = blind_vision(np.asarray(img) if arr is None else arr, t, pulses, sh.get("pc", (0.5, 0.6)))
+        if "redpulse" in fx:
+            arr = np.asarray(img).copy() if arr is None else arr
+            beat = math.exp(-((t * 1.6) % 1.0) / 0.12)
+            a_ = (VIGNETTE * (0.22 + 0.4 * beat))[..., None]
+            arr = (arr * (1 - a_) + np.array([200, 0, 0], np.float32) * a_).astype(np.uint8)
         if "flash" in fx and lt < 0.2:
             arr = np.asarray(img).copy() if arr is None else arr
             a = 0.85 * math.exp(-lt / 0.06)
@@ -794,6 +875,12 @@ def render(args):
                     sc *= max(0.0, (e1 - t) / 0.12)
                 if sc > 0.02:
                     paste_center(img, emoji_imgs[code], W / 2, suby - 250, sc, 7 * math.sin((t - e0) * 8))
+        # textes des passages muets
+        for s0_, s1_, txt, color in says:
+            if s0_ <= t < s1_:
+                if (txt, color) not in word_imgs:
+                    word_imgs[(txt, color)] = render_block(fonts, txt, color)
+                paste_center(img, word_imgs[(txt, color)], W / 2, suby, 0.6 + 0.4 * ease_back((t - s0_) / 0.15))
         # sous-titre mot par mot
         for w0, w1, text, color in subs:
             if w0 <= t < w1:

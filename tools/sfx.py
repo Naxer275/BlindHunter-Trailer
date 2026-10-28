@@ -171,6 +171,25 @@ def sonar():
     return reverb(out, 0.8, 0.35)
 
 
+def ping():
+    """Ping de sonar court (pour les impulsions rapprochées)."""
+    t = t_(0.7)
+    p = np.sin(2 * np.pi * 1320 * t) * np.exp(-t / 0.09) * np.clip(t / 0.002, 0, 1)
+    p += 0.4 * np.sin(2 * np.pi * 2640 * t) * np.exp(-t / 0.04)
+    return reverb(p, 0.6, 0.3)
+
+
+def drone():
+    """Nappe grave et inquiétante qui monte lentement."""
+    d = 9.0
+    t = t_(d)
+    lfo = 0.6 + 0.4 * np.sin(2 * np.pi * 0.25 * t)
+    x = np.sin(2 * np.pi * 55 * t) + 0.5 * np.sin(2 * np.pi * 82.6 * t + 1) + 0.25 * np.sin(2 * np.pi * 110.4 * t)
+    x += 0.35 * filt(rng.standard_normal(len(t)), "bandpass", [90, 400])
+    swell = np.clip(t / 6, 0, 1) ** 1.5 * np.clip((d - t) / 0.8, 0, 1)
+    return np.tanh(1.4 * x * lfo) * swell
+
+
 def tick():
     t = t_(0.05)
     return np.sin(2 * np.pi * 2600 * t) * env(len(t), 0.0003, 0.008)
@@ -190,7 +209,7 @@ BANK = {
     "whoosh": whoosh, "whoosh_down": whoosh_down, "pop": pop, "click": click,
     "boom": boom, "impact": impact, "riser": riser, "ding": ding, "bling": bling,
     "glitch": glitch, "shutter": shutter, "heartbeat": heartbeat, "scratch": scratch,
-    "sonar": sonar, "tick": tick,
+    "sonar": sonar, "tick": tick, "ping": ping, "drone": drone,
 }
 
 if __name__ == "__main__":
