@@ -592,16 +592,98 @@ def search_bar(fonts, typed, caret):
     return img
 
 
+# ---------------------------------------------------------------- voix assemblée
+def load_stereo(path):
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-ac", "2", "-ar", str(SR), "-f", "f32le", "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.float32).reshape(-1, 2).T
+
+
+def splice_voices(args, sentences, tmpdir, gap=0.08):
+    """Assemble la voix off à partir de phrases de voix déjà générées (même voix ElevenLabs)."""
+    files = dict(kv.split("=", 1) for kv in (args.voices or []))
+    src = {}
+    for key, mod in P.VOICES.items():
+        if not any(s.get("voice", ("",))[0] == key for s in sentences):
+            continue
+        ss = [dict(x, words=tokenize(x["text"])) for x in importlib.import_module(mod).SCRIPT]
+        align_timing(ss, files[key])
+        src[key] = (ss, load_stereo(files[key]))
+    parts, cur = [], 0.0
+    for s in sentences:
+        key, idx = s["voice"]
+        ss, audio = src[key]
+        ref = ss[idx]
+        assert [w["key"] for w in ref["words"]] == [w["key"] for w in s["words"]], s["text"]
+        a = max(0.0, ref["words"][0]["t0"] - 0.05)
+        b = min(audio.shape[1] / SR, ref["words"][-1]["t1"] + 0.12)
+        seg = audio[:, int(a * SR):int(b * SR)].copy()
+        k = int(0.01 * SR)
+        seg[:, :k] *= np.linspace(0, 1, k)
+        seg[:, -k:] *= np.linspace(1, 0, k)
+        act = np.abs(seg).max(0) > 0.02
+        seg *= 0.12 / (np.sqrt((seg[:, act] ** 2).mean()) + 1e-9)  # même niveau pour toutes les phrases
+        for w, rw in zip(s["words"], ref["words"]):
+            w["t0"], w["t1"] = rw["t0"] - a + cur, rw["t1"] - a + cur
+        parts += [seg, np.zeros((2, int(gap * SR)), np.float32)]
+        cur += seg.shape[1] / SR + gap
+    out = os.path.join(tmpdir, "voix_assemblee.wav")
+    v = np.concatenate(parts, axis=1)
+    wavfile.write(out, SR, (v.T / (np.abs(v).max() + 1e-9) * 0.9 * 32767).astype(np.int16))
+    return out, cur - gap
+
+
+def render_header(fonts, assets, text, code):
+    """Bandeau de texte façon TikTok : boîte blanche arrondie, texte noir gras, emoji 3D."""
+    font = fonts.get(60, 800)
+    d0 = ImageDraw.Draw(Image.new("L", (1, 1)))
+    words, lines, cur = text.split(), [], ""
+    for w in words:  # retour à la ligne automatique
+        test = (cur + " " + w).strip()
+        if d0.textlength(test, font=font) > 820 and cur:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = test
+    lines.append(cur)
+    es = 76
+    widths = [d0.textlength(l, font=font) for l in lines]
+    widths[-1] += es + 14
+    bw, lh = int(max(widths)) + 70, 78
+    bh = lh * len(lines) + 44
+    img = Image.new("RGBA", (bw + 40, bh + 40), (0, 0, 0, 0))
+    sh = Image.new("L", img.size, 0)
+    ImageDraw.Draw(sh).rounded_rectangle((20, 26, 20 + bw, 26 + bh), 26, fill=120)
+    img.putalpha(sh.filter(ImageFilter.GaussianBlur(10)))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((20, 20, 20 + bw, 20 + bh), 26, fill="white")
+    y = 20 + 22
+    for i, l in enumerate(lines):
+        x = 20 + (bw - widths[i]) / 2
+        d.text((x, y), l, font=font, fill="#111111")
+        if i == len(lines) - 1:
+            e = Image.open(os.path.join(assets, "emoji", f"{code}.png")).convert("RGBA").resize((es, es), Image.LANCZOS)
+            img.alpha_composite(e, (int(x + d.textlength(l, font=font) + 14), int(y - 4)))
+        y += lh
+    return img
+
+
 # ---------------------------------------------------------------- rendu
 def render(args):
     sentences = [dict(s, words=tokenize(s["text"])) for s in P.SCRIPT]
-    speech_end = align_timing(sentences, args.voice) if args.voice else estimate_timing(sentences)
+    tmpdir = os.path.join(os.path.dirname(os.path.abspath(args.out)), "_tmp")
+    os.makedirs(tmpdir, exist_ok=True)
+    if any("voice" in s for s in sentences):
+        args.voice, speech_end = splice_voices(args, sentences, tmpdir)
+        print("Voix assemblée :", args.voice)
+    else:
+        speech_end = align_timing(sentences, args.voice) if args.voice else estimate_timing(sentences)
     total, shots, cues, subs, emojis, search, cuts = build_timeline(sentences, speech_end)
+    headers = [(sentences[a]["vis"][0], sentences[b]["vis"][1], txt, code)
+               for a, b, txt, code in getattr(P, "HEADERS", [])]
     print(f"Durée : {total:.1f}s, {len(shots)} plans, {len(subs)} mots, {len(cues)} effets sonores")
     for s in sentences:
         print(f"  {s['vis'][0]:6.2f}s  {s['text']}")
-    tmpdir = os.path.join(os.path.dirname(os.path.abspath(args.out)), "_tmp")
-    os.makedirs(tmpdir, exist_ok=True)
     audio = mix_audio(args, total, shots, cues, sentences, tmpdir)
     print("Audio mixé :", audio)
 
@@ -682,11 +764,18 @@ def render(args):
             gc = sh["gamecard"]
             if "img" not in gc:
                 gc["img"] = render_gamecard(fonts, args.src, gc)
-            paste_center(img, gc["img"], W / 2, H * 0.36, 0.4 + 0.6 * ease_back(lt / 0.3))
+            paste_center(img, gc["img"], W / 2, H * gc.get("y", 0.36), gc.get("scale", 1.0) * (0.4 + 0.6 * ease_back(lt / 0.3)))
         if sh.get("card"):
             if sh["card"] not in card_imgs:
                 card_imgs[sh["card"]] = render_card(fonts, *sh["card"])
             paste_center(img, card_imgs[sh["card"]], W / 2, H * 0.33, 0.5 + 0.5 * ease_back(lt / 0.25))
+        # bandeau du haut
+        for h0, h1, txt, code in headers:
+            if h0 <= t < h1:
+                if (txt, code) not in card_imgs:
+                    card_imgs[(txt, code)] = render_header(fonts, args.assets, txt, code)
+                sc = 1.0 if h0 == 0 else 0.7 + 0.3 * ease_back((t - h0) / 0.2)
+                paste_center(img, card_imgs[(txt, code)], W / 2, H * 0.15, sc)
         # barre de recherche
         if search and search[0] <= t < search[1]:
             t0, t1, ty0, ty1 = search
@@ -732,6 +821,7 @@ if __name__ == "__main__":
     ap.add_argument("--src", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--voice")
+    ap.add_argument("--voices", nargs="*", help="voix sources pour un plan assemblé : v1=voix.mp3 v2=voix2.mp3")
     ap.add_argument("--assets", required=True, help="dossier avec fonts/, emoji/, sfx/")
     ap.add_argument("--plan", default="plan", help="module du plan de montage (plan, plan2…)")
     ap.add_argument("--music", default="none", help="none (ajoutée dans TikTok), gen (générée) ou chemin d'un fichier")
