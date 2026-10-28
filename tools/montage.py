@@ -383,7 +383,10 @@ def mix_audio(args, total, shots, cues, sentences, tmpdir):
         sd = [s for s in sentences if s.get("music_drop")]
         if sb and sd:
             brk = (find_word(sb[0], sb[0]["music_break"])["t0"], find_word(sd[0], sd[0]["music_drop"])["t0"])
-        add(mus, music.build(total, drop1=drop1, brk=brk), 0.0)
+        m = music.build(total, drop1=drop1, brk=brk)
+        if args.voice:  # creuse 1-3 kHz pour laisser la place à la voix
+            m = m - 0.4 * sosfilt(butter(2, [1000, 3000], btype="band", fs=SR, output="sos"), m, axis=-1)
+        add(mus, m, 0.0)
     elif args.music != "none":
         # musique fournie : démarre à --music-start, fondu en fin de vidéo
         raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(args.music_start), "-i", args.music, "-ac", "2",
@@ -400,7 +403,7 @@ def mix_audio(args, total, shots, cues, sentences, tmpdir):
         rel = int(0.25 * SR)
         envl = np.convolve(envl, np.ones(rel) / rel, mode="same")
         envl = np.clip(envl / (np.percentile(envl[envl > 0.01], 70) + 1e-9), 0, 1) if np.any(envl > 0.01) else envl
-        mus *= 0.42 * (1 - 0.55 * envl)
+        mus *= 0.32 * (1 - 0.6 * envl)
     else:
         mus *= 0.55
     game = np.zeros((2, n), np.float32)

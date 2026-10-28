@@ -1,205 +1,238 @@
-"""Génère un beat phonk énergique libre de droits (stéréo, 48 kHz).
+"""Génère une instru énergique et mélodique libre de droits (stéréo, 48 kHz).
+
+Style calé sur la vidéo exemple : 117,5 BPM, sol mineur (Gm - Eb - Bb - F),
+mélodie pluck syncopée 3-3-2, pad supersaw, basse 808, beat dembow / trap.
 
 Usage : python3 music.py sortie.wav [durée_s]
 """
 import sys
+
 import numpy as np
-from scipy.signal import butter, sosfilt
 from scipy.io import wavfile
+from scipy.signal import butter, fftconvolve, sosfilt
 
 SR = 48000
-BPM = 132
+BPM = 117.5
 BEAT = 60 / BPM
 STEP = BEAT / 4  # double-croche
 BAR = BEAT * 4
-rng = np.random.default_rng(7)
+rng = np.random.default_rng(11)
+
+# accords (une mesure chacun) : notes MIDI du pad, basse, et mélodie (pas -> note)
+CHORDS = [
+    dict(pad=[55, 58, 62, 67], bass=43, mel={0: 74, 3: 70, 6: 67, 8: 74, 10: 72, 11: 70, 14: 69}),  # Gm
+    dict(pad=[55, 58, 63, 67], bass=51, mel={0: 75, 3: 70, 6: 67, 8: 75, 10: 74, 11: 72, 14: 70}),  # Eb
+    dict(pad=[53, 58, 62, 65], bass=46, mel={0: 77, 3: 74, 6: 70, 8: 77, 10: 75, 11: 74, 14: 72}),  # Bb
+    dict(pad=[53, 57, 60, 65], bass=41, mel={0: 72, 3: 69, 6: 65, 8: 72, 10: 74, 12: 72, 14: 69}),  # F
+]
 
 
-def t_(dur):
-    return np.arange(int(dur * SR)) / SR
+def hz(m):
+    return 440.0 * 2 ** ((m - 69) / 12)
+
+
+def t_(d):
+    return np.arange(int(d * SR)) / SR
 
 
 def filt(x, kind, f, order=2):
-    sos = butter(order, f, btype=kind, fs=SR, output="sos")
-    return sosfilt(sos, x)
+    return sosfilt(butter(order, f, btype=kind, fs=SR, output="sos"), x, axis=-1)
 
 
-def env(n, attack=0.002, decay=0.2, curve=1.0):
+def env(n, a, d):
     t = np.arange(n) / SR
-    a = np.clip(t / attack, 0, 1) if attack > 0 else 1
-    return a * np.exp(-t / decay) ** curve
+    return np.clip(t / max(a, 1e-4), 0, 1) * np.exp(-t / d)
 
 
-def note_hz(n):
-    return 440.0 * 2 ** ((n - 69) / 12)
+def saw(f, t, phase=0.0):
+    return 2 * ((f * t + phase) % 1) - 1
 
 
-# ---------- instruments ----------
+# ---------------------------------------------------------------- instruments
+def pluck(m, dur=0.42):
+    """Pluck brillant : 3 dents de scie désaccordées, filtre qui se ferme vite."""
+    t = t_(dur)
+    f = hz(m)
+    x = sum(saw(f * d, t, rng.random()) for d in (0.994, 1.0, 1.006)) / 3
+    x += 0.35 * np.sin(2 * np.pi * f * 2 * t)
+    # filtre passe-bas dynamique approximé par mélange de deux versions filtrées
+    bright, dark = filt(x, "lowpass", 7000), filt(x, "lowpass", 900)
+    k = np.exp(-t / 0.07)
+    y = bright * k + dark * (1 - k)
+    return y * env(len(t), 0.002, 0.18)
+
+
+def supersaw_pad(notes, dur):
+    t = t_(dur)
+    x = np.zeros((2, len(t)))
+    for m in notes:
+        for i, d in enumerate(np.linspace(-0.12, 0.12, 6)):
+            v = saw(hz(m + d), t, rng.random())
+            x[i % 2] += v
+    x = filt(x, "lowpass", 2600)
+    a = np.clip(t / 0.08, 0, 1) * np.clip((dur - t) / 0.12, 0, 1)
+    return x * a * 0.03
+
+
+def bass808(m, dur, glide_from=None):
+    t = t_(dur)
+    f1 = hz(m)
+    f = f1 + ((hz(glide_from) - f1) * np.exp(-t / 0.06) if glide_from else 0)
+    ph = 2 * np.pi * np.cumsum(f * np.ones(len(t))) / SR
+    x = np.sin(ph) * env(len(t), 0.004, 0.7)
+    k = int(0.015 * SR)
+    x[-k:] *= np.linspace(1, 0, k)
+    return np.tanh(2.6 * x) * 0.75  # saturation : harmoniques audibles sur téléphone
+
+
 def kick():
-    t = t_(0.45)
-    f = 45 + 140 * np.exp(-t / 0.035)
-    ph = 2 * np.pi * np.cumsum(f) / SR
-    x = np.sin(ph) * env(len(t), 0.001, 0.16)
-    click = filt(rng.standard_normal(len(t)), "highpass", 2000) * env(len(t), 0.0005, 0.004)
-    return np.tanh(2.2 * (x + 0.4 * click))
+    t = t_(0.4)
+    f = 48 + 150 * np.exp(-t / 0.03)
+    x = np.sin(2 * np.pi * np.cumsum(f) / SR) * env(len(t), 0.0008, 0.14)
+    click = filt(rng.standard_normal(len(t)), "bandpass", [1500, 6000]) * env(len(t), 0.0003, 0.004)
+    return np.tanh(2.0 * (x + 0.35 * click))
 
 
 def clap():
-    t = t_(0.35)
-    n = rng.standard_normal(len(t))
-    n = filt(n, "bandpass", [900, 4500])
+    t = t_(0.4)
+    n = filt(rng.standard_normal(len(t)), "bandpass", [900, 5000])
     e = np.zeros(len(t))
-    for d in (0.0, 0.011, 0.022):  # claquements multiples
+    for d in (0.0, 0.009, 0.018, 0.027):
         i = int(d * SR)
-        e[i:] += env(len(t) - i, 0.0005, 0.012)
-    e += 0.6 * env(len(t), 0.001, 0.09)
-    tone = np.sin(2 * np.pi * 190 * t) * env(len(t), 0.001, 0.05)
-    return np.tanh(1.5 * (n * e + 0.4 * tone))
+        e[i:] += env(len(t) - i, 0.0004, 0.01)
+    e += 0.7 * env(len(t), 0.001, 0.11)
+    return np.tanh(1.6 * n * e)
+
+
+def rim():
+    t = t_(0.08)
+    x = np.sin(2 * np.pi * 820 * t) + 0.6 * filt(rng.standard_normal(len(t)), "bandpass", [2000, 6000])
+    return x * env(len(t), 0.0003, 0.018) * 0.6
 
 
 def hat(open_=False):
-    t = t_(0.25 if open_ else 0.06)
-    n = filt(rng.standard_normal(len(t)), "highpass", 7000)
-    return n * env(len(t), 0.0005, 0.08 if open_ else 0.014) * 0.6
+    t = t_(0.3 if open_ else 0.05)
+    n = filt(rng.standard_normal(len(t)), "highpass", 8000)
+    return n * env(len(t), 0.0003, 0.09 if open_ else 0.012) * 0.55
 
 
-def cowbell(midi, dur=0.18):
-    """Cowbell 808 accordée : deux carrés désaccordés, filtrés."""
-    t = t_(dur)
-    base = note_hz(midi)
-    x = np.sign(np.sin(2 * np.pi * base * t)) + np.sign(np.sin(2 * np.pi * base * 1.48 * t))
-    x = filt(x, "bandpass", [base * 0.9, min(base * 6, 16000)])
-    return np.tanh(1.8 * x * env(len(t), 0.001, 0.07)) * 0.55
+def shaker():
+    t = t_(0.06)
+    n = filt(rng.standard_normal(len(t)), "bandpass", [5000, 12000])
+    return n * env(len(t), 0.008, 0.02) * 0.3
 
 
-def bass808(midi, dur, glide_from=None):
-    t = t_(dur)
-    f1 = note_hz(midi)
-    if glide_from is not None:
-        f0 = note_hz(glide_from)
-        f = f1 + (f0 - f1) * np.exp(-t / 0.05)
-    else:
-        f = np.full(len(t), f1)
-    ph = 2 * np.pi * np.cumsum(f) / SR
-    x = np.sin(ph) + 0.25 * np.sin(2 * ph)
-    e = env(len(t), 0.003, 0.9)
-    e[-int(0.02 * SR):] *= np.linspace(1, 0, int(0.02 * SR))
-    return np.tanh(3.0 * x * e) * 0.8  # 808 saturée façon phonk
-
-
-def pad(midis, dur):
-    t = t_(dur)
-    x = np.zeros(len(t))
-    for m in midis:
-        for det in (-0.08, 0.0, 0.08):
-            f = note_hz(m + det)
-            x += 2 * ((t * f) % 1) - 1  # dent de scie
-    x = filt(x, "lowpass", 1400, 2)
-    a = np.clip(t / 0.4, 0, 1) * np.clip((dur - t) / 0.4, 0, 1)
-    return x * a * 0.05
-
-
-def riser(dur):
-    t = t_(dur)
+def riser(d):
+    t = t_(d)
     n = rng.standard_normal(len(t))
     out = np.zeros(len(t))
-    chunk = int(0.05 * SR)
-    for i in range(0, len(t), chunk):
-        fc = 300 + (9000 - 300) * (i / len(t)) ** 2
-        seg = filt(n[i:i + chunk + 2000], "bandpass", [fc * 0.7, min(fc * 1.4, 20000)])
-        out[i:i + chunk] = seg[:len(out[i:i + chunk])]
-    sweep = np.sin(2 * np.pi * np.cumsum(200 + 1800 * (t / dur) ** 2) / SR)
-    return (out * 0.5 + 0.15 * sweep) * (t / dur) ** 1.5
+    ch = int(0.04 * SR)
+    for i in range(0, len(t), ch):
+        fc = 400 * (12000 / 400) ** (i / len(t))
+        out[i:i + ch] = filt(n[i:i + ch + 2000], "bandpass", [fc * 0.6, min(fc * 1.5, 20000)])[:len(out[i:i + ch])]
+    s = np.sin(2 * np.pi * np.cumsum(220 + 1600 * (t / d) ** 2) / SR)
+    return (out * 0.6 + 0.12 * s) * (t / d) ** 2
 
 
 def impact():
-    t = t_(1.6)
-    f = 32 + 90 * np.exp(-t / 0.08)
-    x = np.sin(2 * np.pi * np.cumsum(f) / SR) * env(len(t), 0.001, 0.6)
-    n = filt(rng.standard_normal(len(t)), "lowpass", 3000) * env(len(t), 0.001, 0.12)
-    return np.tanh(2.0 * (x + 0.5 * n)) * 0.9
+    t = t_(1.8)
+    f = 35 + 120 * np.exp(-t / 0.05)
+    x = np.sin(2 * np.pi * np.cumsum(f) / SR) * env(len(t), 0.001, 0.5)
+    x += 0.5 * filt(rng.standard_normal(len(t)), "lowpass", 4000) * env(len(t), 0.0005, 0.25)
+    return np.tanh(1.8 * x) * 0.8
 
 
-# ---------- arrangement ----------
+def downlifter(d=1.2):
+    return riser(d)[::-1] * 0.7
+
+
+# ---------------------------------------------------------------- effets
 def place(buf, sig, t0, gain=1.0, pan=0.0):
     i = int(t0 * SR)
-    if i >= buf.shape[1]:
+    if i >= buf.shape[1] or i < 0:
         return
-    j = min(buf.shape[1], i + len(sig))
-    l = np.cos((pan + 1) * np.pi / 4)
-    r = np.sin((pan + 1) * np.pi / 4)
-    buf[0, i:j] += sig[:j - i] * gain * l * 1.414
-    buf[1, i:j] += sig[:j - i] * gain * r * 1.414
+    if sig.ndim == 1:
+        l, r = np.cos((pan + 1) * np.pi / 4) * 1.414, np.sin((pan + 1) * np.pi / 4) * 1.414
+        sig = np.stack([sig * l, sig * r])
+    j = min(buf.shape[1], i + sig.shape[1])
+    buf[:, i:j] += sig[:, :j - i] * gain
 
 
-# Fa# mineur : F#3=54. Mélodie cowbell en double-croches (16 pas).
-ROOT = 54
-PROG = [0, 0, -4, -2]  # F#  F#  D  E  (par mesure)
-COW_A = [12, None, 15, 12, None, 19, None, 17, 15, None, 12, None, 15, 17, 19, None]
-COW_B = [24, None, 22, 19, None, 22, None, 19, 17, None, 15, None, 17, 15, 12, None]
-KICK = [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0]
-HATS = [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1]
+def reverb(x, length=1.8, wet=0.25):
+    n = int(length * SR)
+    t = np.arange(n) / SR
+    ir = np.stack([rng.standard_normal(n), rng.standard_normal(n)]) * np.exp(-t / (length / 6))
+    ir = filt(ir, "lowpass", 6000)
+    ir /= np.sqrt((ir ** 2).sum(axis=1, keepdims=True))
+    y = np.stack([fftconvolve(x[c], ir[c])[:x.shape[1]] for c in range(2)])
+    return x * (1 - wet) + y * wet * 1.5
 
 
-def calm(n, t0, t1, riser_end=True):
-    """Partie calme (intro / break) : pad + cowbell étouffée, riser vers la fin."""
-    melo = np.zeros((2, n))
-    drums = np.zeros((2, n))
-    fx = np.zeros((2, n))
+def pingpong(x, delay, fb=0.35, wet=0.3):
+    d = int(delay * SR)
+    y = np.zeros_like(x)
+    tap = x.mean(0)
+    for k in range(1, 6):
+        g = fb ** (k - 1) * wet
+        if d * k >= x.shape[1]:
+            break
+        y[k % 2, d * k:] += tap[:x.shape[1] - d * k] * g
+    return x + filt(y, "bandpass", [400, 6000])
+
+
+# ---------------------------------------------------------------- arrangement
+def section(n, t0, t1, kind):
+    """kind : 'calm' (intro/break) ou 'drop'."""
+    drums, bass, pad, lead = (np.zeros((2, n)) for _ in range(4))
+    kicks = []
     b = 0
     while t0 + b * BAR < t1:
         tb = t0 + b * BAR
-        chord = ROOT + PROG[b % 4]
-        place(melo, pad([chord, chord + 3, chord + 7], min(BAR, t1 - tb) + 0.3), tb, 1.0)
-        for s, nte in enumerate(COW_A if b % 2 == 0 else COW_B):
-            if nte is not None and tb + s * STEP < t1:
-                place(melo, filt(cowbell(ROOT + nte), "lowpass", 1500), tb + s * STEP, 0.5, -0.2)
-        for s in range(0, 16, 4):
-            if tb + s * STEP < t1:
-                place(drums, hat(), tb + s * STEP, 0.4, 0.3)
+        ch = CHORDS[b % 4]
+        place(pad, supersaw_pad(ch["pad"], BAR + 0.05), tb, 1.0 if kind == "drop" else 0.8)
+        for s, m in ch["mel"].items():
+            place(lead, pluck(m), tb + s * STEP, 0.5, -0.15 if s % 2 else 0.15)
+        if kind == "calm":
+            for s in range(0, 16, 2):
+                place(drums, shaker(), tb + s * STEP, 0.7, 0.3)
+        else:
+            for s in range(16):
+                ts = tb + s * STEP
+                if s % 4 == 0:
+                    place(drums, kick(), ts, 1.0)
+                    kicks.append(ts)
+                if s in (4, 12):
+                    place(drums, clap(), ts, 0.7)
+                if s in (3, 6, 11, 14):  # dembow
+                    place(drums, rim(), ts, 0.35, -0.3)
+                if s % 2 == 0:
+                    place(drums, hat(), ts + (0.012 if s % 4 == 2 else 0), 0.5, 0.35)
+                if s % 4 == 2:
+                    place(drums, hat(True), ts, 0.25, -0.35)
+                place(drums, shaker(), ts, 0.4, 0.5)
+            if b % 4 == 3:  # roulement de clap en fin de phrase
+                for k in range(4):
+                    place(drums, clap(), tb + (12 + k) * STEP, 0.25 + 0.12 * k)
+            # 808 : note longue + rebond
+            prev = CHORDS[(b - 1) % 4]["bass"]
+            place(bass, bass808(ch["bass"], 10 * STEP, glide_from=prev if b else None), tb, 0.9)
+            place(bass, bass808(ch["bass"] + 12, 2 * STEP), tb + 10 * STEP, 0.55)
+            place(bass, bass808(ch["bass"], 4 * STEP), tb + 12 * STEP, 0.8)
+            # arpège aigu pour plus d'énergie
+            for s in range(0, 16, 2):
+                m = ch["pad"][(s // 2) % 4] + 12
+                place(lead, filt(pluck(m, 0.15), "lowpass", 3500), tb + s * STEP, 0.06, 0.6 if s % 4 else -0.6)
         b += 1
-    if riser_end:
-        d = min(BAR, t1 - t0)
-        place(fx, riser(d), t1 - d, 0.6)
-    return drums, melo, fx
-
-
-def drop(n, t0, t1):
-    """Partie drop : kick, clap, hats trap, 808 saturée, cowbell."""
-    drums = np.zeros((2, n))
-    bass = np.zeros((2, n))
-    melo = np.zeros((2, n))
+    if kind == "calm":
+        lead = filt(lead, "lowpass", 1600)  # intro et break étouffés
+    lead = pingpong(lead, 3 * STEP)
+    # sidechain : pad, lead et basse respirent sur le kick
     duck = np.ones(n)
-    place(melo, impact(), t0, 0.8)
-    b = 0
-    while t0 + b * BAR < t1:
-        tb = t0 + b * BAR
-        chord = ROOT + PROG[b % 4]
-        for s in range(16):
-            ts = tb + s * STEP
-            if KICK[s]:
-                place(drums, kick(), ts, 1.0)
-                i, k = int(ts * SR), int(0.18 * SR)
-                if i + k < n:
-                    duck[i:i + k] = np.minimum(duck[i:i + k], 0.45 + 0.55 * np.linspace(0, 1, k) ** 0.5)
-            if s in (4, 12):
-                place(drums, clap(), ts, 0.75)
-            if HATS[s]:
-                place(drums, hat(), ts, 0.45 if s % 2 else 0.6, 0.35)
-            if s == 14 and b % 2 == 1:
-                for k in range(3):  # roll de hi-hats trap
-                    place(drums, hat(), ts + k * STEP / 3, 0.4, 0.35)
-        place(drums, hat(True), tb + 6 * STEP, 0.35, -0.35)
-        for s, dur in ((0, 7), (7, 3), (10, 6)):  # 808 qui suit le kick
-            prev = chord - 12 + (5 if s == 10 and b % 2 else 0)
-            place(bass, bass808(chord - 24, dur * STEP, glide_from=prev if s else None), tb + s * STEP, 0.9)
-        for s, nte in enumerate(COW_A if b % 2 == 0 else COW_B):
-            if nte is not None:
-                place(melo, cowbell(ROOT + nte), tb + s * STEP, 0.75, -0.2)
-                place(melo, cowbell(ROOT + nte), tb + s * STEP + 0.09, 0.22, 0.4)  # écho
-        b += 1
-    mix = drums + bass + melo * duck
-    # coupe nette à t1 (fondu de 30 ms) pour laisser place au break
+    for ts in kicks:
+        i, k = int(ts * SR), int(0.2 * SR)
+        if i + k < n:
+            duck[i:i + k] = np.minimum(duck[i:i + k], 0.35 + 0.65 * np.linspace(0, 1, k) ** 0.6)
+    mix = drums + bass * (0.5 + 0.5 * duck) + reverb(pad + lead, 1.6, 0.28) * duck
     i1 = int(t1 * SR)
     k = int(0.03 * SR)
     if i1 < n:
@@ -208,26 +241,30 @@ def drop(n, t0, t1):
     return mix
 
 
-def build(duration, drop1=3.64, brk=None):
-    """drop1 : début du premier drop (s). brk : (début, fin) d'un break optionnel."""
-    n = int((duration + 2) * SR)
-    mix = np.zeros((2, n))
-    for part in calm(n, 0.0, drop1):
-        mix += part
+def build(duration, drop1=None, brk=None):
+    """drop1 : début du drop (s). brk : (début, fin) d'un break optionnel."""
+    n = int((duration + 3) * SR)
+    drop1 = BAR * 2 if drop1 is None else drop1
+    mix = section(n, 0.0, drop1, "calm")
+    fx = np.zeros((2, n))
+    place(fx, riser(min(drop1, BAR * 1.5)), drop1 - min(drop1, BAR * 1.5), 0.5)
+    place(fx, impact(), drop1, 0.7)
     if brk:
         a, b = brk
-        mix += drop(n, drop1, a)
-        for part in calm(n, a, b):
-            mix += part * 0.8
-        mix += drop(n, b, duration)
+        mix += section(n, drop1, a, "drop")
+        mix += section(n, a, b, "calm") * 0.85
+        place(fx, downlifter(), a, 0.5)
+        place(fx, riser(min(b - a, BAR * 2)), b - min(b - a, BAR * 2), 0.6)
+        place(fx, impact(), b, 0.8)
+        mix += section(n, b, duration, "drop")
     else:
-        mix += drop(n, drop1, duration)
-    mix = np.tanh(1.3 * mix)  # glue/saturation
+        mix += section(n, drop1, duration, "drop")
+    mix += fx
+    mix = np.tanh(1.2 * mix)  # glue
     mix = mix[:, :int(duration * SR)]
     fade = int(1.5 * SR)
     mix[:, -fade:] *= np.linspace(1, 0, fade)
-    mix /= np.max(np.abs(mix)) / 0.89
-    return mix
+    return mix / (np.max(np.abs(mix)) + 1e-9) * 0.89
 
 
 def write(path, mix):
@@ -236,6 +273,6 @@ def write(path, mix):
 
 if __name__ == "__main__":
     out = sys.argv[1]
-    dur = float(sys.argv[2]) if len(sys.argv) > 2 else 66
+    dur = float(sys.argv[2]) if len(sys.argv) > 2 else 60
     write(out, build(dur))
-    print(f"{out}: {dur}s, {BPM} BPM")
+    print(f"{out}: {dur}s, {BPM} BPM, sol mineur")
