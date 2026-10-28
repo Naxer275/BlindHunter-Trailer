@@ -177,7 +177,7 @@ SCRIPT = [
         hl={"chance": Y, "secret": P},
         shots=[
             dict(src=55.0, w=1.0, cx=0.5, fx=["punch"]),
-            dict(src=57.6, w=0.7, z=1.25),
+            dict(src=58.1, w=0.7, z=1.1, suby=0.66),
             dict(src=59.0, w=1.2, cx=0.5, fx=["punch"]),
             dict(src=63.0, w=1.3, cx=0.5, at="secret", fx=["flash"]),
         ],
