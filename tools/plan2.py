@@ -7,7 +7,7 @@ Même format que plan.py (voir sa documentation).
 
 STYLE = dict(
     font="Anton-Regular.ttf", weight=None, size=112, stroke=7, sub_y=0.66,
-    pop="soft", whip=False, auto_whoosh=False, drift=0.03,
+    pop="soft", whip=False, auto_whoosh=True, drift=0.03,
 )
 
 SCRIPT = [
@@ -17,6 +17,7 @@ SCRIPT = [
             dict(src=267.0, w=1.0, cx=0.5),
             dict(src=388.0, w=1.0, cx=0.5),
         ],
+        sfx=[("^", "heartbeat", 0.5), ("potes", "pop", 0.5)],
     ),
     dict(
         text="Dans Blind Hunter, un joueur devient le chasseur… mais il est complètement aveugle.",
@@ -24,14 +25,17 @@ SCRIPT = [
             dict(src=162.0, w=1.0, cx=0.5),
             dict(src=248.8, w=1.0, at="mais"),
         ],
+        sfx=[("mais", "whoosh_down", 0.4), ("aveugle", "boom", 0.8)],
     ),
     dict(
         text="Au début de la partie, il a dix secondes pour mémoriser la map.",
         shots=[dict(src=212.5, w=1.0, cx=0.52)],
+        sfx=[("dix", "tick", 0.5), ("secondes", "tick", 0.5), ("map", "pop", 0.4)],
     ),
     dict(
         text="Pendant ce temps, les autres ont quinze secondes pour se cacher.",
         shots=[dict(src=411.6, w=1.0, cx=0.45)],
+        sfx=[("quinze", "tick", 0.5), ("secondes", "tick", 0.5), ("cacher", "heartbeat", 0.5)],
     ),
     dict(
         text="Ensuite, la chasse commence : le chasseur ne voit plus rien, à part avec son sonar.",
@@ -40,6 +44,7 @@ SCRIPT = [
             dict(src=249.0, w=1.0, at="le"),
             dict(src=322.3, w=1.4, at="sonar"),
         ],
+        sfx=[("commence", "impact", 0.7), ("rien", "glitch", 0.4), ("sonar", "sonar", 0.6)],
     ),
     dict(
         text="Au moindre bruit, il te voit en rouge et peut t'éliminer.",
@@ -47,17 +52,20 @@ SCRIPT = [
             dict(src=257.9, w=1.0, cx=0.72),
             dict(src=262.0, w=1.6, cx=0.55, at="rouge"),
         ],
+        sfx=[("bruit", "tick", 0.5), ("rouge", "heartbeat", 0.5), ("t'éliminer", "boom", 0.8)],
     ),
     dict(
         text="Si tu es caché, le but est de survivre deux minutes sans te faire attraper.",
         shots=[dict(src=429.7, w=1.0, cx=0.55)],
+        sfx=[("deux", "tick", 0.5), ("minutes", "tick", 0.5), ("attraper", "scratch", 0.4)],
     ),
     dict(
         text="Et si tu es le chasseur, tu dois trouver tout le monde pour gagner.",
         shots=[
             dict(src=336.5, w=1.6, cx=0.45),
-            dict(src=343.2, w=1.0, cx=0.5, at="gagner"),
+            dict(src=343.2, w=1.0, cx=0.5, at="monde"),
         ],
+        sfx=[("trouver", "whoosh", 0.35), ("gagner", "bling", 0.7)],
     ),
     dict(
         text="Le jeu s'appelle Blind Hunter.",
