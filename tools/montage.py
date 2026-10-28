@@ -1,7 +1,8 @@
 """Monte le TikTok vertical Blind Hunter à partir du gameplay, de la voix off et du plan.
 
 Usage :
-  python3 montage.py --src gameplay.mp4 --out tiktok.mp4 [--voice voix.mp3] [--assets dossier]
+  python3 montage.py --src gameplay.mp4 --out tiktok.mp4 --assets dossier [--voice voix.mp3]
+                     [--music none|gen|musique.mp3] [--music-start 12.5]
 
 Sans --voice, le timing de la voix est estimé (aperçu sans voix).
 """
@@ -196,6 +197,8 @@ def build_timeline(sentences, speech_end):
                 d = (g1 - g0) * sh.get("w", 1.0) / tot
                 shots.append(dict(sh, start=t, dur=d))
                 t += d
+        if i > 0 and not any(k == "^" for k, _, _ in s.get("sfx", [])):
+            cues.append((max(0.0, a - 0.2), "whoosh", 0.22))
         for key, name, gain in s.get("sfx", []):
             t = a if key == "^" else find_word(s, key)["t0"]
             if name.startswith("whoosh"):
@@ -213,7 +216,8 @@ def build_timeline(sentences, speech_end):
             nxt = s["words"][j + 1]["t0"] if j + 1 < len(s["words"]) else min(w["t1"] + 0.4, b)
             color = s.get("hl", {}).get(w["key"], "#FFFFFF")
             subs.append((w["t0"], max(nxt, w["t0"] + 0.1), w["disp"], color))
-    return total, shots, cues, subs, emojis, search
+    cuts = [s["vis"][0] for s in sentences[1:]]
+    return total, shots, cues, subs, emojis, search, cuts
 
 
 # ---------------------------------------------------------------- vidéo source
@@ -311,16 +315,24 @@ def mix_audio(args, total, shots, cues, sentences, tmpdir):
         v = np.frombuffer(raw, np.float32).reshape(-1, 2).T
         v = v / (np.max(np.abs(v)) + 1e-9) * 0.9
         add(voice, v, 0.0)
-    # musique calée sur la voix : drop sur la phrase 2, break et retour du drop
-    drop1 = sentences[1]["words"][0]["t0"]
-    brk = None
-    sb = [s for s in sentences if s.get("music_break")]
-    sd = [s for s in sentences if s.get("music_drop")]
-    if sb and sd:
-        brk = (find_word(sb[0], sb[0]["music_break"])["t0"], find_word(sd[0], sd[0]["music_drop"])["t0"])
-    m = music.build(total, drop1=drop1, brk=brk)
     mus = np.zeros((2, n), np.float32)
-    add(mus, m, 0.0)
+    if args.music == "gen":
+        # musique générée calée sur la voix : drop sur la phrase 2, break et retour du drop
+        drop1 = sentences[1]["words"][0]["t0"]
+        brk = None
+        sb = [s for s in sentences if s.get("music_break")]
+        sd = [s for s in sentences if s.get("music_drop")]
+        if sb and sd:
+            brk = (find_word(sb[0], sb[0]["music_break"])["t0"], find_word(sd[0], sd[0]["music_drop"])["t0"])
+        add(mus, music.build(total, drop1=drop1, brk=brk), 0.0)
+    elif args.music != "none":
+        # musique fournie : démarre à --music-start, fondu en fin de vidéo
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(args.music_start), "-i", args.music, "-ac", "2",
+                              "-ar", str(SR), "-f", "f32le", "-"], capture_output=True, check=True).stdout
+        m = np.frombuffer(raw, np.float32).reshape(-1, 2).T.copy()[:, :n]
+        k = min(int(1.5 * SR), m.shape[1])
+        m[:, m.shape[1] - k:] *= np.linspace(1, 0, k)
+        add(mus, m / (np.max(np.abs(m)) + 1e-9) * 0.9, 0.0)
     # ducking de la musique sous la voix
     if args.voice:
         envl = np.abs(voice).max(0)
@@ -387,6 +399,50 @@ def render_word(fonts, text, color, max_w=int(W * 0.88)):
     return img
 
 
+def spaced(draw, xy, text, font, spacing, **kw):
+    x, y = xy
+    for ch in text:
+        draw.text((x, y), ch, font=font, **kw)
+        x += draw.textlength(ch, font=font) + spacing
+
+
+def spaced_width(draw, text, font, spacing):
+    return sum(draw.textlength(ch, font=font) for ch in text) + spacing * (len(text) - 1)
+
+
+def render_card(fonts, title, subtitle):
+    """Carton de fin : titre géant avec lueur violette + sous-titre jaune."""
+    w, h = W, 520
+    d0 = ImageDraw.Draw(Image.new("L", (1, 1)))
+    size = 170
+    while spaced_width(d0, title, fonts.get(size), size * 0.08) > W * 0.9:
+        size -= 6
+    tf, sf = fonts.get(size), fonts.get(54, 800)
+    tw, sw_ = spaced_width(d0, title, tf, size * 0.08), spaced_width(d0, subtitle, sf, 9)
+    glow = Image.new("L", (w, h), 0)
+    spaced(ImageDraw.Draw(glow), ((w - tw) / 2, 120), title, tf, size * 0.08, fill=255, stroke_width=10, stroke_fill=255)
+    glow = glow.filter(ImageFilter.GaussianBlur(28))
+    img = Image.new("RGBA", (w, h), (157, 78, 221, 0))
+    img.putalpha(glow.point(lambda a: int(a * 0.9)))
+    d = ImageDraw.Draw(img)
+    spaced(d, ((w - tw) / 2, 120), title, tf, size * 0.08, fill="white", stroke_width=6, stroke_fill="black")
+    y2 = 120 + size + 50
+    d.rounded_rectangle(((w - sw_) / 2 - 34, y2 - 18, (w + sw_) / 2 + 34, y2 + 78), 20, fill=(0, 0, 0, 170))
+    spaced(d, ((w - sw_) / 2, y2), subtitle, sf, 9, fill="#FFE14D")
+    return img
+
+
+def emoji_with_shadow(path, size=270):
+    e = Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
+    pad = 40
+    out = Image.new("RGBA", (size + 2 * pad, size + 2 * pad), (0, 0, 0, 0))
+    sh = Image.new("L", out.size, 0)
+    sh.paste(e.getchannel("A").point(lambda a: a * 0.55), (pad, pad + 14))
+    out.putalpha(sh.filter(ImageFilter.GaussianBlur(14)))
+    out.alpha_composite(e, (pad, pad))
+    return out
+
+
 def ease_back(p):
     p = min(max(p, 0.0), 1.0)
     c1 = 1.70158
@@ -424,7 +480,7 @@ def search_bar(fonts, typed, caret):
 def render(args):
     sentences = [dict(s, words=tokenize(s["text"])) for s in SCRIPT]
     speech_end = align_timing(sentences, args.voice) if args.voice else estimate_timing(sentences)
-    total, shots, cues, subs, emojis, search = build_timeline(sentences, speech_end)
+    total, shots, cues, subs, emojis, search, cuts = build_timeline(sentences, speech_end)
     print(f"Durée : {total:.1f}s, {len(shots)} plans, {len(subs)} mots, {len(cues)} effets sonores")
     for s in sentences:
         print(f"  {s['vis'][0]:6.2f}s  {s['text']}")
@@ -436,6 +492,7 @@ def render(args):
     fonts = Fonts(args.assets)
     word_imgs = {}
     emoji_imgs = {}
+    card_imgs = {}
     nframes = int(round(total * FPS))
     enc = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
                             "-r", str(FPS), "-i", "-", "-i", audio, "-map", "0:v", "-map", "1:a",
@@ -474,6 +531,9 @@ def render(args):
             x0 = min(max((W - bw) / 2 + dx, 0), W - bw)
             y0 = min(max((H - bh) / 2 + dy, 0), H - bh)
             img = img.resize((W, H), Image.BILINEAR, box=(x0, y0, x0 + bw, y0 + bh))
+        if "blur" in fx:
+            img = img.filter(ImageFilter.GaussianBlur(16))
+            img = Image.fromarray((np.asarray(img) * 0.55).astype(np.uint8))
         arr = None
         if "glitch" in fx and lt < 0.22:
             arr = np.asarray(img).copy()
@@ -487,12 +547,25 @@ def render(args):
         if "dark" in fx:
             arr = np.asarray(img).copy() if arr is None else arr
             arr = (arr * max(0.12, 1 - 0.9 * lt / max(sh["dur"], 0.1))).astype(np.uint8)
+        dc = min((abs(t - c) for c in cuts), default=9)
+        if dc < 0.075:
+            arr = np.asarray(img).copy() if arr is None else arr
+            step = int(26 * (1 - dc / 0.075)) + 4
+            acc = np.zeros(arr.shape, np.float32)
+            for j in range(-4, 5):
+                acc += np.roll(arr, j * step + (40 if t < min(cuts, key=lambda c: abs(t - c)) else -40), axis=1)
+            arr = (acc / 9).astype(np.uint8)
         if "flash" in fx and lt < 0.2:
             arr = np.asarray(img).copy() if arr is None else arr
             a = 0.85 * math.exp(-lt / 0.06)
             arr = (arr * (1 - a) + 255 * a).astype(np.uint8)
         if arr is not None:
             img = Image.fromarray(arr)
+        suby = int(H * sh.get("suby", SUB_Y / H))
+        if sh.get("card"):
+            if sh["card"] not in card_imgs:
+                card_imgs[sh["card"]] = render_card(fonts, *sh["card"])
+            paste_center(img, card_imgs[sh["card"]], W / 2, H * 0.33, 0.5 + 0.5 * ease_back(lt / 0.25))
         # barre de recherche
         if search and search[0] <= t < search[1]:
             t0, t1, ty0, ty1 = search
@@ -504,13 +577,13 @@ def render(args):
         for e0, e1, code in emojis:
             if e0 <= t < e1:
                 if code not in emoji_imgs:
-                    emoji_imgs[code] = Image.open(os.path.join(args.assets, "emoji", f"{code}.png")).convert("RGBA").resize((250, 250), Image.LANCZOS)
+                    emoji_imgs[code] = emoji_with_shadow(os.path.join(args.assets, "emoji", f"{code}.png"))
                 p = (t - e0) / 0.16
                 sc = 0.3 + 0.7 * ease_back(p)
                 if t > e1 - 0.12:
                     sc *= max(0.0, (e1 - t) / 0.12)
                 if sc > 0.02:
-                    paste_center(img, emoji_imgs[code], W / 2, SUB_Y - 230, sc, 8 * math.sin((t - e0) * 9))
+                    paste_center(img, emoji_imgs[code], W / 2, suby - 250, sc, 7 * math.sin((t - e0) * 8))
         # sous-titre mot par mot
         for w0, w1, text, color in subs:
             if w0 <= t < w1:
@@ -518,7 +591,7 @@ def render(args):
                 if key not in word_imgs:
                     word_imgs[key] = render_word(fonts, text, color)
                 sc = 0.6 + 0.4 * ease_back((t - w0) / 0.13)
-                paste_center(img, word_imgs[key], W / 2, SUB_Y, sc)
+                paste_center(img, word_imgs[key], W / 2, suby, sc)
                 break
         enc.stdin.write(img.tobytes())
         if f % 150 == 0:
@@ -536,4 +609,6 @@ if __name__ == "__main__":
     ap.add_argument("--out", required=True)
     ap.add_argument("--voice")
     ap.add_argument("--assets", required=True, help="dossier avec fonts/, emoji/, sfx/")
+    ap.add_argument("--music", default="none", help="none (ajoutée dans TikTok), gen (générée) ou chemin d'un fichier")
+    ap.add_argument("--music-start", type=float, default=0.0, help="début dans le fichier musique (s)")
     render(ap.parse_args())

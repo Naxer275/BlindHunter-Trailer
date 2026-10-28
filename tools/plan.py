@@ -8,8 +8,10 @@ Plan :  src = début dans la vidéo source (s), w = poids de durée,
         mode = "crop" (plein écran vertical) ou "fit" (image entière sur fond flou),
         cx/cy = point visé (0..1), z = zoom, pan = (cx début, cx fin),
         speed = vitesse (0.5 = ralenti), at = mot où le plan doit commencer,
-        fx = effets à l'entrée du plan : punch, flash, shake, glitch, dark,
-        maxsrc = secondes de source utilisées avant de figer l'image.
+        fx = effets à l'entrée du plan : punch, flash, shake, glitch, dark, blur,
+        card = (titre, sous-titre) affichés en grand (carton de fin),
+        maxsrc = secondes de source utilisées avant de figer l'image,
+        suby = hauteur des sous-titres pour ce plan (0..1, défaut 0.56).
 Effets sonores / emojis : (mot, nom, gain) ; "^" = début de phrase.
 """
 
@@ -40,9 +42,9 @@ SCRIPT = [
         text="Au début de chaque partie, tout le monde vote pour la map.",
         hl={"vote": Y, "map": Y},
         shots=[
-            dict(src=159.5, w=1.0, cx=0.55, fx=["punch"]),
+            dict(src=162.0, w=1.0, cx=0.5, fx=["punch"]),
             dict(src=169.0, w=1.6, pan=(0.28, 0.72), fx=["punch"]),
-            dict(src=361.0, w=1.2, cx=0.5, fx=["punch"]),
+            dict(src=176.0, w=1.2, cx=0.5, cy=0.47, z=1.6, fx=["punch"]),
         ],
         sfx=[("^", "whoosh", 0.35), ("map", "pop", 0.6)],
     ),
@@ -50,9 +52,10 @@ SCRIPT = [
         text="Si tu es le chasseur, tu as dix secondes pour mémoriser les lieux.",
         hl={"chasseur": R, "dix": Y, "secondes": Y},
         shots=[
-            dict(src=204.0, w=0.9, fx=["punch"]),
-            dict(src=213.6, w=1.3, cx=0.5, fx=["punch"]),
-            dict(src=216.0, w=1.2, cx=0.45, fx=["punch"]),
+            dict(src=205.0, w=0.6, z=1.2, cy=0.45, suby=0.72, fx=["punch"]),
+            dict(src=212.6, w=1.2, cx=0.5, fx=["punch"]),
+            dict(src=214.4, w=1.1, cx=0.62, fx=["punch"]),
+            dict(src=217.6, w=1.0, cx=0.45, fx=["punch"]),
         ],
         sfx=[("^", "whoosh", 0.35), ("dix", "tick", 0.5), ("secondes", "tick", 0.5)],
         emoji=[("dix", "23f3")],
@@ -61,8 +64,8 @@ SCRIPT = [
         text="Et après… plus rien. Tout devient noir.",
         hl={"rien": Y, "noir": R},
         shots=[
-            dict(src=224.0, w=1.2, cx=0.5, fx=["punch"]),
-            dict(src=233.0, w=0.8, at="plus", fx=["glitch"]),
+            dict(src=225.6, w=1.2, cx=0.5, fx=["punch"]),
+            dict(src=228.4, w=0.8, cx=0.6, at="plus", fx=["glitch"]),
             dict(src=249.2, w=1.0, at="noir", fx=["dark", "shake"]),
         ],
         sfx=[("plus", "glitch", 0.5), ("noir", "boom", 0.9)],
@@ -72,9 +75,9 @@ SCRIPT = [
         text="Les autres, eux, n'ont que quinze secondes pour se cacher.",
         hl={"quinze": Y, "cacher": Y},
         shots=[
-            dict(src=399.3, w=0.8, fx=["punch"]),
-            dict(src=403.5, w=1.3, cx=0.5, fx=["punch"]),
-            dict(src=410.0, w=1.3, cx=0.5, fx=["punch"]),
+            dict(src=399.0, w=0.6, z=1.2, cy=0.45, suby=0.72, fx=["punch"]),
+            dict(src=388.0, w=1.2, cx=0.5, fx=["punch"]),
+            dict(src=412.0, w=1.3, cx=0.45, fx=["punch"]),
         ],
         sfx=[("^", "whoosh", 0.35), ("quinze", "heartbeat", 0.6), ("cacher", "pop", 0.6)],
         emoji=[("cacher", "1f92b")],
@@ -83,7 +86,7 @@ SCRIPT = [
         text="Ensuite, la chasse commence.",
         hl={"chasse": R, "commence": R},
         shots=[
-            dict(src=244.3, w=1.0, speed=1.8, fx=["punch"]),
+            dict(src=244.3, w=1.0, speed=1.8, z=1.2, cy=0.45, suby=0.72, fx=["punch"]),
             dict(src=248.8, w=0.6, at="commence", fx=["flash", "shake"]),
         ],
         sfx=[("commence", "impact", 0.8)],
@@ -115,7 +118,7 @@ SCRIPT = [
         text="Il a deux minutes pour éliminer tout le monde.",
         hl={"deux": Y, "minutes": Y, "éliminer": R},
         shots=[
-            dict(src=248.6, w=1.0, cx=0.86, cy=0.25, z=1.6, fx=["punch"]),
+            dict(src=426.0, w=1.0, cx=0.56, z=1.1, maxsrc=1.3, fx=["punch"]),
             dict(src=267.0, w=1.2, cx=0.5, fx=["punch"]),
             dict(src=270.6, w=1.1, cx=0.45, fx=["punch"]),
         ],
@@ -127,7 +130,7 @@ SCRIPT = [
         hl={"victoire": Y},
         shots=[
             dict(src=338.0, w=0.8, speed=0.5, fx=["punch"], game=1.4),
-            dict(src=342.3, w=1.4, cx=0.5, at="victoire", fx=["flash"]),
+            dict(src=343.2, w=1.4, cx=0.5, at="victoire", fx=["flash"]),
         ],
         sfx=[("victoire", "bling", 0.7)],
         emoji=[("victoire", "1f3c6")],
@@ -136,8 +139,8 @@ SCRIPT = [
         text="Et si c'est toi qui te fais attraper… game over.",
         hl={"toi": Y, "game": R, "over": R},
         shots=[
-            dict(src=473.0, w=1.1, cx=0.5, fx=["punch"]),
-            dict(src=474.6, w=0.7, fx=["punch"]),
+            dict(src=446.0, w=0.9, cx=0.5, fx=["punch"]),
+            dict(src=473.0, w=1.0, cx=0.5, fx=["punch"]),
             dict(src=476.4, w=0.6, fx=["shake"]),
             dict(src=498.0, w=1.0, cx=0.5, at="game", fx=["flash"]),
         ],
@@ -148,7 +151,7 @@ SCRIPT = [
         text="Chaque partie te rapporte des Shards pour ouvrir des caisses…",
         hl={"shards": C, "caisses": Y},
         shots=[
-            dict(src=342.6, w=1.1, cx=0.15, cy=0.7, z=1.4, fx=["punch"]),
+            dict(src=343.4, w=1.1, cx=0.15, cy=0.7, z=1.4, fx=["punch"]),
             dict(src=69.6, w=0.9, cx=0.5, fx=["punch"]),
             dict(src=73.2, w=1.0, speed=2.0, fx=["punch"]),
             dict(src=78.0, w=1.0, cx=0.5, fx=["flash"]),
@@ -161,9 +164,9 @@ SCRIPT = [
         hl={"revolvers": Y, "prism": Y, "l'eclipse": P},
         shots=[
             dict(src=80.4, w=1.2, cx=0.45, fx=["punch"]),
-            dict(src=36.0, w=0.5, cx=0.22, fx=["punch"]),
-            dict(src=39.0, w=0.5, cx=0.22, fx=["punch"]),
-            dict(src=42.0, w=0.8, cx=0.24, at="prism", fx=["punch"]),
+            dict(src=37.6, w=0.5, cx=0.22, fx=["punch"]),
+            dict(src=39.1, w=0.5, cx=0.22, fx=["punch"]),
+            dict(src=43.6, w=0.8, cx=0.24, at="prism", fx=["punch"]),
             dict(src=90.5, w=0.9, cx=0.22, at="l'eclipse", fx=["punch"]),
         ],
         sfx=[("revolvers", "whoosh", 0.4), ("prism", "pop", 0.6), ("l'eclipse", "bling", 0.6)],
@@ -174,7 +177,7 @@ SCRIPT = [
         hl={"chance": Y, "secret": P},
         shots=[
             dict(src=55.0, w=1.0, cx=0.5, fx=["punch"]),
-            dict(src=57.6, w=0.7, z=2.0),
+            dict(src=57.6, w=0.7, z=1.25),
             dict(src=59.0, w=1.2, cx=0.5, fx=["punch"]),
             dict(src=63.0, w=1.3, cx=0.5, at="secret", fx=["flash"]),
         ],
@@ -197,8 +200,8 @@ SCRIPT = [
         text="Et abonne-toi pour plus de jeux comme ça.",
         hl={"abonne-toi": R},
         shots=[
-            dict(src=342.8, w=1.0, cx=0.5, fx=["punch"]),
-            dict(src=14.6, w=1.6, mode="fit", fz=1.25, maxsrc=1.3, fx=["flash"]),
+            dict(src=343.6, w=1.0, cx=0.5, fx=["punch"]),
+            dict(src=128.5, w=1.6, cx=0.47, card=("BLIND HUNTER", "DISPONIBLE SUR ROBLOX"), fx=["flash", "blur"]),
         ],
         sfx=[("abonne-toi", "pop", 0.6)],
         emoji=[("abonne-toi", "1f447")],
