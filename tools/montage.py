@@ -165,6 +165,15 @@ def align_timing(sentences, voice):
     js.reverse()
     starts = [first] + [edges[j + 1] for j in js[:-1]]
     ends = [stops[j] for j in js]
+    # coupures vérifiées à l'oreille (plan : VOICE_BREAKS = début approximatif des phrases 2, 3…) :
+    # chacune est posée sur la vraie pause la plus proche
+    breaks = getattr(P, "VOICE_BREAKS", None)
+    if breaks:
+        if len(breaks) != K - 1:
+            raise SystemExit(f"VOICE_BREAKS : {K - 1} coupures attendues, {len(breaks)} données")
+        snapped = [min(pauses, key=lambda p: abs((p[0] + p[1]) / 2 - t)) for t in breaks]
+        starts = [first] + [p[1] for p in snapped]
+        ends = [p[0] for p in snapped] + [last]
     for s, s0, s1 in zip(sentences, starts, ends):
         inner = [p for p in pauses if p[0] > s0 + 0.03 and p[1] < s1 - 0.03]
         place_words(s["words"], s0, s1, inner, nuc[(nuc >= s0) & (nuc < s1)])
@@ -613,7 +622,7 @@ def render_gamecard(fonts, src, gc):
     d.rounded_rectangle((bx, by, 30 + cw - 40, by + 100), 18, fill=(0, 176, 111, 255))
     cx, cy = (bx + 30 + cw - 40) / 2 - 90, by + 50
     d.polygon([(cx - 18, cy - 24), (cx - 18, cy + 24), (cx + 22, cy)], fill="white")
-    d.text((cx + 50, cy), "JOUER", font=fonts.get(56, 800), fill="white", anchor="lm")
+    d.text((cx + 50, cy), gc.get("button", "JOUER"), font=fonts.get(56, 800), fill="white", anchor="lm")
     return card
 
 

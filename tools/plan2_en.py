@@ -65,13 +65,16 @@ SCRIPT = [
         text="The game is called Blind Hunter.",
         shots=[
             dict(src=128.5, w=1.0, cx=0.47, fx=["blur"],
-                 gamecard=dict(title="Blind Hunter", thumb=136.0, thumb_cx=0.47)),
+                 gamecard=dict(title="Blind Hunter", thumb=136.0, thumb_cx=0.47, button="PLAY")),
         ],
         sfx=[("blind", "pop", 0.5)],
     ),
 ]
 
 SEARCH_TEXT = ""
+
+# début des phrases 2 à 9 dans la voix anglaise (exports : voix « Engli.mp3 »), vérifiés sur ses pauses
+VOICE_BREAKS = [3.2, 8.5, 12.7, 16.4, 22.0, 26.8, 31.5, 35.2]
 
 # Script à coller dans ElevenLabs (modèle Eleven v3, voix « Eric - Dynamic and Energetic ») :
 # les balises entre crochets règlent le ton et ne sont pas lues ; les MAJUSCULES appuient le mot.
