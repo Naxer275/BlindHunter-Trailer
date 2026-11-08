@@ -307,9 +307,16 @@ def build_timeline(sentences, speech_end):
 
 
 # ---------------------------------------------------------------- vidéo source
+CLIPS = {}  # --clips a=fichier b=fichier : un plan choisit sa vidéo avec clip="b" (sinon --src)
+
+
+def srcof(default, item):
+    return CLIPS.get(item.get("clip"), default) if item.get("clip") else default
+
+
 def video_filter(sh):
     speed = sh.get("speed", 1.0)
-    pre = f"setpts=(PTS-STARTPTS)/{speed},fps={FPS}"
+    pre = f"setpts=(PTS-STARTPTS)/{speed},fps={FPS},scale=1920:1080:flags=bicubic"
     grade = "eq=contrast=1.05:saturation=1.18"
     if sh.get("mode") == "fit":
         fw = int(W * sh.get("fz", 1.0)) // 2 * 2
@@ -331,7 +338,7 @@ def video_filter(sh):
 
 def open_shot(src, sh):
     need = sh["dur"] * sh.get("speed", 1.0) + 0.2
-    cmd = ["ffmpeg", "-v", "error", "-ss", f"{sh['src']:.3f}", "-t", f"{need:.3f}", "-i", src, "-an",
+    cmd = ["ffmpeg", "-v", "error", "-ss", f"{sh['src']:.3f}", "-t", f"{need:.3f}", "-i", srcof(src, sh), "-an",
            "-vf", video_filter(sh), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=W * H * 3 * 2)
 
@@ -340,7 +347,7 @@ def shot_audio(src, sh):
     speed = sh.get("speed", 1.0)
     need = sh["dur"] * speed
     af = f"asetrate={int(SR * speed)},aresample={SR}" if speed < 1 else f"atempo={speed}" if speed > 1 else "anull"
-    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{sh['src']:.3f}", "-t", f"{need + 0.05:.3f}", "-i", src,
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{sh['src']:.3f}", "-t", f"{need + 0.05:.3f}", "-i", srcof(src, sh),
                           "-vn", "-af", af, "-ac", "2", "-ar", str(SR), "-f", "f32le", "-"],
                          capture_output=True).stdout
     a = np.frombuffer(raw, np.float32).reshape(-1, 2).T.copy()
@@ -582,7 +589,7 @@ def render_block(fonts, text, color, size=104, max_w=900):
 
 
 def grab_frame(src, t):
-    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t:.3f}", "-i", src, "-frames:v", "1",
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t:.3f}", "-i", src, "-frames:v", "1", "-vf", "scale=1920:1080",
                           "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
     return Image.fromarray(np.frombuffer(raw, np.uint8).reshape(1080, 1920, 3))
 
@@ -590,7 +597,7 @@ def grab_frame(src, t):
 def render_gamecard(fonts, src, gc):
     """Carte de jeu façon Roblox : vignette carrée, titre, bouton Jouer."""
     cw, th = 700, 700
-    frame = grab_frame(src, gc["thumb"])
+    frame = grab_frame(srcof(src, gc), gc["thumb"])
     x = int(min(max(gc.get("thumb_cx", 0.5) * 1920 - 540, 0), 1920 - 1080))
     thumb = frame.crop((x, 0, x + 1080, 1080)).resize((th, th), Image.LANCZOS)
     # titre du jeu sur la vignette, avec lueur violette
@@ -922,7 +929,9 @@ if __name__ == "__main__":
     ap.add_argument("--plan", default="plan", help="module du plan de montage (plan, plan2…)")
     ap.add_argument("--music", default="none", help="none (ajoutée dans TikTok), gen (générée) ou chemin d'un fichier")
     ap.add_argument("--music-start", type=float, default=0.0, help="début dans le fichier musique (s)")
+    ap.add_argument("--clips", nargs="*", help="vidéos sources nommées pour clip=… dans le plan : a=v1.mp4 b=v2.mp4")
     a = ap.parse_args()
+    CLIPS.update(dict(kv.split("=", 1) for kv in (a.clips or [])))
     P = importlib.import_module(a.plan)
     STYLE = dict(DEFAULT_STYLE, **getattr(P, "STYLE", {}))
     render(a)
