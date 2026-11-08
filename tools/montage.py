@@ -37,8 +37,6 @@ def tokenize(text):
     words = []
     for raw in text.split():
         core = raw.strip(PUNCT + "«»\"")
-        if not core:
-            continue
         pause = 0.0
         if raw.endswith("…") or raw.endswith("..."):
             pause = 0.35
@@ -46,6 +44,10 @@ def tokenize(text):
             pause = 0.25
         elif raw[-1] in ",;:":
             pause = 0.15
+        if not core:  # ponctuation séparée par une espace (« voir ! », « Caché ? ») : pause du mot d'avant
+            if words:
+                words[-1]["pause"] = max(words[-1]["pause"], pause)
+            continue
         words.append(dict(key=core.lower(), disp=core.upper(), pause=pause, syl=syllables(core)))
     return words
 
@@ -174,9 +176,12 @@ def align_timing(sentences, voice):
         snapped = [min(pauses, key=lambda p: abs((p[0] + p[1]) / 2 - t)) for t in breaks]
         starts = [first] + [p[1] for p in snapped]
         ends = [p[0] for p in snapped] + [last]
+    short = detect_pauses(x, min_pause=0.06)[2]  # dans une phrase, une pause courte suffit à séparer deux mots
     for s, s0, s1 in zip(sentences, starts, ends):
-        inner = [p for p in pauses if p[0] > s0 + 0.03 and p[1] < s1 - 0.03]
-        place_words(s["words"], s0, s1, inner, nuc[(nuc >= s0) & (nuc < s1)])
+        inner = [p for p in short if p[0] > s0 + 0.03 and p[1] < s1 - 0.03]
+        # creux d'énergie (voix qui baisse sans vraie pause) : coupures possibles pour la ponctuation
+        soft = [(d, d) for d in dips if s0 + 0.15 < d < s1 - 0.15 and all(not (a - 0.1 <= d <= b + 0.1) for a, b in inner)]
+        place_words(s["words"], s0, s1, sorted(inner + soft), nuc[(nuc >= s0) & (nuc < s1)])
     return last
 
 
@@ -193,17 +198,32 @@ def place_words(words, s0, s1, inner, nuc):
         i = min(int(f), n - 1)
         return float(nuc[i]) if i + 1 >= n else float(nuc[i] + (f - i) * (nuc[i + 1] - nuc[i]))
 
-    # ponctuation (virgule, « … », point) -> pause réelle la plus proche
-    cuts, used = [], -1
-    for k, w in enumerate(words[:-1]):
-        if w["pause"] <= 0:
-            continue
-        e = expected(cum[k + 1])
-        opts = [(abs((p[0] + p[1]) / 2 - e), q) for q, p in enumerate(inner) if q > used]
-        if opts and min(opts)[0] < 0.7:
-            q = min(opts)[1]
-            cuts.append((k + 1, inner[q]))
-            used = q
+    # ponctuation (virgule, « … », point) -> pauses réelles, dans l'ordre : on choisit l'ensemble
+    # d'associations le plus proche des temps attendus (une ponctuation peut rester sans pause)
+    marks = [(k + 1, expected(cum[k + 1])) for k, w in enumerate(words[:-1]) if w["pause"] > 0]
+    SKIP, MAXD = 0.7, 0.7
+    K, Q = len(marks), len(inner)
+    best = {}
+
+    def solve(i, j):  # marques i.., pauses j.. -> (coût, associations)
+        if i == K:
+            return 0.0, []
+        if (i, j) in best:
+            return best[(i, j)]
+        c, m = solve(i + 1, j)
+        res = (c + SKIP, m)
+        for q in range(j, Q):
+            d = abs((inner[q][0] + inner[q][1]) / 2 - marks[i][1])
+            if inner[q][0] == inner[q][1]:  # simple creux d'énergie : seulement si aucune vraie pause ne convient
+                d += 0.3
+            if d < MAXD:
+                c, m = solve(i + 1, q + 1)
+                if c + d < res[0]:
+                    res = (c + d, [(marks[i][0], inner[q])] + m)
+        best[(i, j)] = res
+        return res
+
+    cuts = solve(0, 0)[1]
     idx = [0] + [k for k, _ in cuts] + [len(words)]
     t0s = [s0] + [p[1] for _, p in cuts]
     t1s = [p[0] for _, p in cuts] + [s1]

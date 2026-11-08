@@ -172,6 +172,9 @@ SCRIPT = [
 ]
 
 SEARCH_TEXT = "Blind Hunter"
+
+# début des phrases 2 à 13 dans la voix française (ElevenLabs 2026-11-08 13:55), posés sur ses pauses
+VOICE_BREAKS = [3.2, 7.2, 9.75, 12.95, 15.9, 18.8, 22.4, 25.95, 30.05, 35.2, 38.9, 42.25]
 TAIL = 2.2
 
 # Texte à coller dans ElevenLabs (modèle Eleven v3, voix « Eric - Dynamic and Energetic ») :
